@@ -616,7 +616,29 @@ Value addSmemStageToScaleLoad(Value scale, mlir::PatternRewriter &rewriter) {
     return localLoad;
   }
 }
+class ScaledBlockedToMMA : public mlir::OpRewritePattern<triton::DotScaledOp> {
+  int computeCapability;
 
+public:
+  ScaledBlockedToMMA(mlir::MLIRContext *context, int computeCapability,
+                     int benefit)
+      : mlir::OpRewritePattern<triton::DotScaledOp>(context, benefit),
+        computeCapability(computeCapability) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(triton::DotScaledOp dotOp,
+                  mlir::PatternRewriter &rewriter) const override {
+    if (computeCapability != 120) {
+      llvm::errs() << "DEBUG::FAILED - computeCapability=" << computeCapability << " is not 120\n";
+      return failure();
+    }
+
+    llvm::errs() << "DEBUG::내가 실행된다 하하하 ScaledBlockedToMMA\n";
+    llvm::errs() << "DEBUG::computeCapability=" << computeCapability << "\n";
+    llvm::errs() << "DEBUG::내가 실행된다 하하하 ScaledBlockedToMMA 끝\n";
+    return failure();
+  }
+};
 class ScaledBlockedToMMAv5
     : public mlir::OpRewritePattern<triton::DotScaledOp> {
   int computeCapability;
@@ -865,10 +887,10 @@ public:
     constexpr int benefitDefault = 1;
     constexpr int benefitMMAv5 = 10;
     patterns.add<BlockedToMMA>(context, computeCapability, benefitDefault);
+    patterns.add<ScaledBlockedToMMA>(context, computeCapability, benefitDefault);
     populateDecomposeScaledBlockedPatterns(patterns, benefitDefault);
     patterns.add<BlockedToMMAv5, ScaledBlockedToMMAv5>(
         context, computeCapability, benefitMMAv5);
-
     if (applyPatternsGreedily(m, std::move(patterns)).failed()) {
       signalPassFailure();
     }

@@ -2,12 +2,25 @@
 #include "Utility.h"
 
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
+#include "triton/Conversion/TritonToTritonGPU/Passes.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
+#include "mlir/Transforms/DialectConversion.h"
+#include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
+#include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
 using namespace mlir;
 using namespace mlir::triton;
 
 using ::mlir::triton::gpu::getShapePerCTA;
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
+
+// pass named attrs (e.g., tt.contiguity) from Triton to Triton
+static void addNamedAttrs(Operation *op, DictionaryAttr dictAttrs) {
+  for (const NamedAttribute attr : dictAttrs.getValue())
+    if (!op->hasAttr(attr.getName()))
+      op->setAttr(attr.getName(), attr.getValue());
+}
 
 LogicalResult convertMMA(triton::DotOp op, triton::DotOp::Adaptor adaptor,
                          const LLVMTypeConverter *typeConverter,
@@ -19,6 +32,29 @@ LogicalResult convertWGMMA(triton::nvidia_gpu::WarpGroupDotOp op,
                            const LLVMTypeConverter *typeConverter,
                            ConversionPatternRewriter &rewriter, Value thread);
 namespace {
+struct ScaledDotOpConversion : public ConvertOpToLLVMPattern<triton::DotScaledOp> {
+  using ConvertOpToLLVMPattern<triton::DotScaledOp>::ConvertOpToLLVMPattern;
+
+  ScaledDotOpConversion(LLVMTypeConverter &converter, int computeCapability,
+                        PatternBenefit benefit)
+      : ConvertOpToLLVMPattern<triton::DotScaledOp>(converter, benefit),
+        computeCapability(computeCapability) {}
+
+  LogicalResult
+  matchAndRewrite(triton::DotScaledOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    llvm::errs() << "DEBUG::내가 실행된다 하하하하 ScaledDotOpConversion\n";
+
+    llvm::errs() << "DEBUG::computeCapability=" << computeCapability << "\n";
+
+    llvm::errs() << "DEBUG::내가 실행된다 하하하하 ScaledDotOpConversion 끝\n";
+    return failure();
+  }
+
+private:
+  int computeCapability;
+};
+
 struct DotOpConversion : public ConvertOpToLLVMPattern<triton::DotOp> {
   using ConvertOpToLLVMPattern<triton::DotOp>::ConvertOpToLLVMPattern;
 
@@ -167,4 +203,5 @@ void mlir::triton::NVIDIA::populateDotOpToLLVMPatterns(
   patterns.add<DotOpConversion>(typeConverter, computeCapability, benefit);
   patterns.add<WarpGroupDotOpConversion>(typeConverter, benefit);
   patterns.add<WarpGroupDotWaitOpConversion>(typeConverter, benefit);
+  patterns.add<ScaledDotOpConversion>(typeConverter, computeCapability, benefit);
 }

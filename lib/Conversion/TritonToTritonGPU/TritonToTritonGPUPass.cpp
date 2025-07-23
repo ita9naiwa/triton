@@ -203,6 +203,102 @@ private:
   }
 };
 
+struct TritonDotScaledPattern : public OpConversionPattern<triton::DotScaledOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::DotScaledOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+
+    llvm::errs() << "DEBUG::내가 실행된다 하하 TritonDotScaledPattern\n";
+
+    // Module operation을 찾아서 compute capability 가져오기
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    if (!moduleOp) {
+      return rewriter.notifyMatchFailure(op, "Could not find parent ModuleOp");
+    }
+
+    int computeCapability = getNVIDIAComputeCapability(moduleOp);
+
+    llvm::errs() << "DEBUG::computeCapability=" << computeCapability << ", checking if == 120\n";
+    if (computeCapability != 120) {
+      llvm::errs() << "DEBUG::FAILED - computeCapability=" << computeCapability << " is not 120\n";
+      return failure();
+    }
+
+    llvm::errs() << "DEBUG::computeCapability=" << computeCapability << "\n";
+    RankedTensorType origType = op.getType();
+    auto origShape = origType.getShape();
+    auto typeConverter = getTypeConverter<TritonGPUTypeConverter>();
+    int numWarps = typeConverter->getNumWarps();
+    int threadsPerWarp = typeConverter->getThreadsPerWarp();
+    int numCTAs = typeConverter->getNumCTAs();
+    auto rank = origShape.size();
+
+    SmallVector<unsigned> retSizePerThread(rank, 1);
+    auto numElements = product<int64_t>(origShape);
+    if (numElements / (numWarps * threadsPerWarp) >= 4) {
+      retSizePerThread[rank - 1] = 2;
+      retSizePerThread[rank - 2] = 2;
+    }
+    if (numElements / (numWarps * threadsPerWarp) >= 16) {
+      retSizePerThread[rank - 1] = 4;
+      retSizePerThread[rank - 2] = 4;
+    }
+    retSizePerThread[rank - 1] = std::min(
+        retSizePerThread[rank - 1], static_cast<unsigned>(origShape[rank - 1]));
+    retSizePerThread[rank - 2] = std::min(
+        retSizePerThread[rank - 2], static_cast<unsigned>(origShape[rank - 2]));
+
+    SmallVector<unsigned> retOrder(rank);
+    for (unsigned i = 0; i < rank; ++i)
+      retOrder[i] = rank - 1 - i;
+    Attribute dEncoding = triton::gpu::BlockedEncodingAttr::get(
+        getContext(), origShape, retSizePerThread, retOrder, numWarps,
+        threadsPerWarp, numCTAs);
+    RankedTensorType retType = origType.cloneWithEncoding(dEncoding);
+
+    // Get operands and add appropriate encodings
+    auto aType = cast<RankedTensorType>(adaptor.getA().getType());
+    auto bType = cast<RankedTensorType>(adaptor.getB().getType());
+    Type aEltType = aType.getElementType();
+    Type bEltType = bType.getElementType();
+    Attribute aEncoding = aType.getEncoding();
+    Attribute bEncoding = bType.getEncoding();
+
+    Value a = adaptor.getA();
+    Value b = adaptor.getB();
+    Value c = adaptor.getC();
+    Value aScale = adaptor.getAScale();
+    Value bScale = adaptor.getBScale();
+
+    // Convert A operand to DotOperandEncoding if needed
+    if (!aEncoding || !mlir::isa<triton::gpu::DotOperandEncodingAttr>(aEncoding)) {
+      Attribute encoding = triton::gpu::DotOperandEncodingAttr::get(
+          getContext(), 0, dEncoding, aEltType);
+      auto dstType = aType.cloneWithEncoding(encoding);
+      a = rewriter.create<triton::gpu::ConvertLayoutOp>(a.getLoc(), dstType, a);
+    }
+
+    // Convert B operand to DotOperandEncoding if needed
+    if (!bEncoding || !mlir::isa<triton::gpu::DotOperandEncodingAttr>(bEncoding)) {
+      Attribute encoding = triton::gpu::DotOperandEncodingAttr::get(
+          getContext(), 1, dEncoding, bEltType);
+      auto dstType = bType.cloneWithEncoding(encoding);
+      b = rewriter.create<triton::gpu::ConvertLayoutOp>(b.getLoc(), dstType, b);
+    }
+    c = rewriter.create<triton::gpu::ConvertLayoutOp>(c.getLoc(), retType, c);
+
+    addNamedAttrs(rewriter.replaceOpWithNewOp<triton::DotScaledOp>(
+                      op, retType, a, b, c, aScale, bScale,
+                      adaptor.getAElemType(), adaptor.getBElemType(),
+                      adaptor.getFastMath(), adaptor.getLhsKPack(), adaptor.getRhsKPack()),
+                  adaptor.getAttributes());
+    llvm::errs() << "DEBUG::내가 실행된다 하하 TritonDotScaledPattern 끝\n";
+    return success();
+  }
+};
+
 struct TritonDotPattern : public OpConversionPattern<triton::DotOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -518,6 +614,7 @@ public:
 void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
                             RewritePatternSet &patterns, unsigned numCTAs) {
   MLIRContext *context = patterns.getContext();
+  patterns.insert<TritonDotScaledPattern>(typeConverter, context, 2);
   patterns.insert< // TODO: view should have custom pattern that views the
                    // layout
       // clang-format off
