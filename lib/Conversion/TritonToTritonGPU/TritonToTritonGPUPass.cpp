@@ -10,6 +10,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
+#include "llvm/Support/LogicalResult.h"
 
 namespace mlir::triton {
 #define GEN_PASS_DEF_CONVERTTRITONTOTRITONGPU
@@ -271,7 +272,7 @@ struct TritonDotScaledPattern : public OpConversionPattern<triton::DotScaledOp> 
     Value c = adaptor.getC();
     Value aScale = adaptor.getAScale();
     Value bScale = adaptor.getBScale();
-
+    llvm::errs() << "DEBUG::aEncoding=" << aEncoding << ", bEncoding=" << bEncoding << "\n";
     // Convert A operand to DotOperandEncoding if needed
     if (!aEncoding || !mlir::isa<triton::gpu::DotOperandEncodingAttr>(aEncoding)) {
       Attribute encoding = triton::gpu::DotOperandEncodingAttr::get(
@@ -287,6 +288,7 @@ struct TritonDotScaledPattern : public OpConversionPattern<triton::DotScaledOp> 
       auto dstType = bType.cloneWithEncoding(encoding);
       b = rewriter.create<triton::gpu::ConvertLayoutOp>(b.getLoc(), dstType, b);
     }
+
     c = rewriter.create<triton::gpu::ConvertLayoutOp>(c.getLoc(), retType, c);
 
     addNamedAttrs(rewriter.replaceOpWithNewOp<triton::DotScaledOp>(
@@ -295,6 +297,8 @@ struct TritonDotScaledPattern : public OpConversionPattern<triton::DotScaledOp> 
                       adaptor.getFastMath(), adaptor.getLhsKPack(), adaptor.getRhsKPack()),
                   adaptor.getAttributes());
     llvm::errs() << "DEBUG::내가 실행된다 하하 TritonDotScaledPattern 끝\n";
+    llvm::errs() << "DEBUG::a=" << a << ", b=" << b << ", c=" << c << "\n";
+    llvm::errs() << "DEBUG::aScale=" << aScale << ", bScale=" << bScale << "\n";
     return success();
   }
 };
