@@ -68,6 +68,7 @@ static int getMMAVersionSafe(int computeCapability, DotOp op) {
   return 0;
 }
 
+template <typename DotOp>
 SmallVector<unsigned> warpsPerTileV2(DotOp dotOp, const ArrayRef<int64_t> shape,
                                      int numWarps) {
   auto rank = shape.size();
@@ -132,6 +133,7 @@ SmallVector<unsigned> warpsPerTileV2(DotOp dotOp, const ArrayRef<int64_t> shape,
   return {(unsigned)warps[0], (unsigned)warps[1]};
 }
 
+template <typename DotOp>
 SmallVector<unsigned, 2>
 warpsPerTileV3(DotOp dotOp, const ArrayRef<int64_t> shape, int numWarps,
                const SmallVector<unsigned, 3> &instrShape) {
@@ -233,6 +235,7 @@ getSharedMemoryScale(Value arg, mlir::PatternRewriter &rewriter, Location loc) {
   return rewriter.create<LocalAllocOp>(loc, newType, arg);
 }
 
+template <typename DotOp>
 SmallVector<unsigned, 3>
 getWarpsPerTile(DotOp dotOp, const ArrayRef<int64_t> shape, int version,
                 int numWarps, const SmallVector<unsigned, 3> &instrShape) {
@@ -629,133 +632,74 @@ public:
   mlir::LogicalResult
   matchAndRewrite(triton::DotScaledOp dotOp,
                   mlir::PatternRewriter &rewriter) const override {
-    // At top of matchAndRewrite:
-    if (dotOp->hasAttr("loweredToMMA"))
-      return failure();
-    llvm::errs() << "하하하 ScaledBlockedToMMA\n";
-    llvm::errs() << "DEBUG::computeCapability=" << computeCapability << "\n";
-    llvm::errs() << " 1\n";
-
-
-    // TODO: Check data-types and SM compatibility
-    if (!dotOp.getType().getEncoding() ||
-    mlir::isa<NvidiaMmaEncodingAttr>(dotOp.getType().getEncoding())) {
-      llvm::errs() << "DEBUG::Failed to check data-types and SM compatibility\n";
+    if (!dotOp.getType().getEncoding() || mlir::isa<NvidiaMmaEncodingAttr>(dotOp.getType().getEncoding())) {
+      llvm::errs() << "DEBUG::dotOp.getType().getEncoding()=" << dotOp.getType().getEncoding() << "\n";
       return failure();
     }
-    llvm::errs() << " 2\n";
-
-    RankedTensorType oldRetType = dotOp.getType();
+    llvm::errs() << "하하하 ScaledBlockedToMMA\n";
+    int numWarps = lookupNumWarps(dotOp);
+    int versionMajor = 2;
+    int versionMinor = computeCapability == 75 ? 1 : 0;
+    bool aFromLoad = comesFromLoadOrBlockArg(dotOp.getA());
+    bool bFromLoad = comesFromLoadOrBlockArg(dotOp.getB());
 
     Value a = dotOp.getA();
     Value b = dotOp.getB();
-    // get MMA encoding for the given number of warps
-    auto retShapePerCTA = getShapePerCTA(oldRetType);
-    int numWarps = lookupNumWarps(dotOp);
-    auto CTALayout = getCTALayout(oldRetType.getEncoding());
-
     Location loc = dotOp.getLoc();
-
-    auto oldAType = a.getType();
-    auto oldBType = b.getType();
-
-    bool IsAMixedPrecFp4 = false;
-    bool IsBMixedPrecFp4 = false;
-    bool isAFP4 = dotOp.getAElemType() == ScaleDotElemType::E2M1;
-    bool isBFP4 = dotOp.getBElemType() == ScaleDotElemType::E2M1;
-
-    if (dotOp.getAElemType() != dotOp.getBElemType()) {
-      if (isAFP4)
-        IsAMixedPrecFp4 = true;
-      else if (isBFP4)
-        IsBMixedPrecFp4 = true;
-    }
-    llvm::errs() << " 3\n";
-
-    a = getSharedMemoryMMAOperand(a, rewriter, 0,
-                                  /*allowTranspose=*/!isAFP4,
-                                  /*isMMAv5Fp4Padded=*/false,
-                                  /*forceTranspose=*/!dotOp.getLhsKPack(),
-                                  dotOp);
-    b = getSharedMemoryMMAOperand(b, rewriter, 1,
-                                  /*allowTranspose=*/!isBFP4,
-                                  /*isMMAv5Fp4Padded=*/false,
-                                  /*forceTranspose=*/!dotOp.getRhsKPack(),
-                                  dotOp);
     MLIRContext *context = dotOp->getContext();
-    unsigned m = 128;
-    unsigned n = retShapePerCTA[1] >= 256 ? 256 : retShapePerCTA[1];
+    auto oldAType = cast<RankedTensorType>(a.getType());
+    auto oldBType = cast<RankedTensorType>(b.getType());
+    auto oldRetType = cast<RankedTensorType>(dotOp.getType());
+    auto CTALayout = getCTALayout(oldRetType.getEncoding());
     ArrayRef<unsigned> CTASplitNum = CTALayout.getCTASplitNum();
+    auto retShapePerCTA = getShapePerCTA(oldRetType);
+    auto instrShape = mmaVersionToInstrShape(
+      versionMajor, retShapePerCTA, oldAType.getElementType(), numWarps);
+    auto warpsPerTile = getWarpsPerTile(dotOp, retShapePerCTA, versionMajor,
+      numWarps, instrShape);
 
-
-    auto lhsScale = addSmemStageToScaleLoad(dotOp.getAScale(), rewriter);
-    auto rhsScale = addSmemStageToScaleLoad(dotOp.getBScale(), rewriter);
-    llvm::errs() << "lhsScale 타입: " << lhsScale.getType() << "\n";
-    llvm::errs() << "rhsScale 타입: " << rhsScale.getType() << "\n";
-    llvm::errs() << "lhsScale 값: " << lhsScale << "\n";
-    llvm::errs() << "rhsScale 값: " << rhsScale << "\n";
-
-    llvm::errs() << " 4\n";
-    Value c = dotOp.getOperand(2);
-    SmallVector<unsigned, 2> warpsPerTile = {4, 1}; // Default for MMAv5
-
-    // Convert shared memory operands back for now
-    a = getSharedMemoryMMAOperand(a, rewriter, 0,
-                                  /*allowTranspose=*/!isAFP4,
-                                  /*isMMAv5Fp4Padded=*/false,
-                                  /*forceTranspose=*/!dotOp.getLhsKPack(),
-                                  dotOp);
-    b = getSharedMemoryMMAOperand(b, rewriter, 1,
-                                  /*allowTranspose=*/!isBFP4,
-                                  /*isMMAv5Fp4Padded=*/false,
-                                  /*forceTranspose=*/!dotOp.getRhsKPack(),
-                                  dotOp);
-
-    // Create MMA encoding to prevent this pattern from matching again
-    auto instrShape = mmaVersionToInstrShape(5, retShapePerCTA,
-                                             cast<RankedTensorType>(dotOp.getA().getType()).getElementType(),
-                                             numWarps);
-    llvm::errs() << "instrShape: [" << instrShape[0] << ", " << instrShape[1] << ", " << instrShape[2] << "]\n";
-
-    auto mmaEnc = NvidiaMmaEncodingAttr::get(
-        oldRetType.getContext(), /*versionMajor=*/5, /*versionMinor=*/0,
-        warpsPerTile, CTALayout, instrShape);
+    auto mmaEnc = NvidiaMmaEncodingAttr::get(oldRetType.getContext(), versionMajor, versionMinor, warpsPerTile, CTALayout, instrShape);
     auto newRetType = oldRetType.cloneWithEncoding(mmaEnc);
 
-    llvm::errs() << "기존 타입: " << oldRetType << "\n";
-    llvm::errs() << "새 타입: " << newRetType << "\n";
+    auto oldAcc = dotOp.getOperand(2);
+    auto newAcc = rewriter.create<ConvertLayoutOp>(oldAcc.getLoc(), newRetType, oldAcc);
 
-    // Create GPU-specific scaled dot op that can handle memdesc operands
-    auto newDotOp = rewriter.create<triton::nvidia_gpu::WarpGroupDotOp>(
-      loc, newRetType, a, b, c, nullptr,
-      /*inputPrecision=*/InputPrecision::IEEE, /*maxNumImpreciseAcc=*/0, false);
+    RankedTensorType oldScaleAType = dotOp.getAScale().getType();
+    RankedTensorType oldScaleBType = dotOp.getBScale().getType();
 
-        // Store scale information as attributes for later use in LLVM conversion
-    newDotOp->setAttr("triton.is_scaled", rewriter.getBoolAttr(true));
-    newDotOp->setAttr("triton.a_elem_type",
-                      rewriter.getI32IntegerAttr(static_cast<int>(dotOp.getAElemType())));
-    newDotOp->setAttr("triton.b_elem_type",
-                      rewriter.getI32IntegerAttr(static_cast<int>(dotOp.getBElemType())));
-    newDotOp->setAttr("triton.lhs_k_pack", rewriter.getBoolAttr(dotOp.getLhsKPack()));
-    newDotOp->setAttr("triton.rhs_k_pack", rewriter.getBoolAttr(dotOp.getRhsKPack()));
+    Attribute scaleEncoding =
+        triton::nvidia_gpu::TensorMemoryScalesEncodingAttr::get(
+            context, CTASplitNum[0], CTASplitNum[1]);
 
-    // Store scale operands by creating a mapping or passing through different mechanism
-    // For now, we'll handle this in the LLVM conversion where we have access to adaptor
-    llvm::errs() << "Stored scaling info in attributes\n";
+    Attribute tensorMemorySpace = triton::nvidia_gpu::TensorMemorySpaceAttr::get(context);
 
-    // Copy all attributes from old op to new op
-    for (const auto& attr : dotOp->getAttrs()) {
-      if (!newDotOp->hasAttr(attr.getName())) {
-        newDotOp->setAttr(attr.getName(), attr.getValue());
-      }
-    }
-    newDotOp->setAttr("loweredToMMA", UnitAttr::get(context));
+    // Create shared memory types for scales (uint8 element type)
+    auto uint8Type = rewriter.getIntegerType(8);
+    Type scaleAType = triton::gpu::MemDescType::get(
+        oldScaleAType.getShape(), uint8Type, scaleEncoding,
+        tensorMemorySpace, /*mutableMemory=*/false);
+    Type scaleBType = triton::gpu::MemDescType::get(
+        oldScaleBType.getShape(), uint8Type, scaleEncoding,
+        tensorMemorySpace, /*mutableMemory=*/false);
 
-    // Replace and erase old op
-    rewriter.replaceOp(dotOp, newDotOp.getResult());
+    Attribute scaleALayout = getTmemScales(oldScaleAType, numWarps);
+    Attribute scaleBLayout = getTmemScales(oldScaleBType, numWarps);
+    RankedTensorType newScaleAType =
+        oldScaleAType.cloneWithEncoding(scaleALayout);
+    RankedTensorType newScaleBType = oldScaleBType.cloneWithEncoding(scaleBLayout);
+    auto lhsScale = addSmemStageToScaleLoad(dotOp.getAScale(), rewriter);
+    auto rhsScale = addSmemStageToScaleLoad(dotOp.getBScale(), rewriter);
+    Value newScaleA =
+      rewriter.create<ConvertLayoutOp>(loc, newScaleAType, lhsScale);
+    Value newScaleB =
+      rewriter.create<ConvertLayoutOp>(loc, newScaleBType, rhsScale);
 
-    llvm::errs() << " 하하하 ScaledBlockedToMMA 끝\n";
+    auto newDotOp = rewriter.create<triton::DotScaledOp>(loc, newRetType, a, b, newAcc, newScaleA, newScaleB, dotOp.getAElemType(), dotOp.getBElemType(), dotOp.getFastMath(), dotOp.getLhsKPack(), dotOp.getRhsKPack());
+    rewriter.replaceOpWithNewOp<ConvertLayoutOp>(dotOp, oldRetType, newDotOp.getResult());
+
+    llvm::errs() << "하하하 ScaledBlockedToMMA 끝\n";
     return success();
+
   }
 };
 
