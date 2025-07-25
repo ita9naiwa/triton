@@ -369,8 +369,8 @@ def test_mxfp(M, N, K, BLOCK_M, BLOCK_N, BLOCK_K, NUM_STAGES, nonKDim, NUM_WARPS
     a_f16 = f8_to_f16(a, dtype_src_str)
     b = torch.randint(20, 40, (K, N), dtype=torch.uint8, device=device).view(torch.float8_e5m2)
     b_f16 = f8_to_f16(b, dtype_src_str)
-    a_scale = torch.randint(130, (M, K // 32), dtype=torch.uint8, device=device)
-    b_scale = torch.randint(130, (N, K // 32), dtype=torch.uint8, device=device)
+    a_scale = torch.randint(64, (M, K // 32), dtype=torch.uint8, device=device)
+    b_scale = torch.randint(64, (N, K // 32), dtype=torch.uint8, device=device)
 
     dtype_dst = getattr(torch, dtype_dst_str)
     output = torch.empty((M, N), dtype=dtype_dst, device=device)

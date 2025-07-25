@@ -1,11 +1,11 @@
 #include "PatternTritonGPUOpToLLVM.h"
 #include "Utility.h"
 
+#include "mlir/Transforms/DialectConversion.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
-#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
-#include "mlir/Transforms/DialectConversion.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/TritonGPUConversion.h"
 #include "triton/Dialect/TritonGPU/Transforms/Utility.h"
 
@@ -14,7 +14,6 @@ using namespace mlir::triton;
 
 using ::mlir::triton::gpu::getShapePerCTA;
 using ::mlir::triton::gpu::NvidiaMmaEncodingAttr;
-
 
 // pass named attrs (e.g., tt.contiguity) from Triton to Triton
 static void addNamedAttrs(Operation *op, DictionaryAttr dictAttrs) {
@@ -32,9 +31,10 @@ LogicalResult convertWGMMA(triton::nvidia_gpu::WarpGroupDotOp op,
                            const LLVMTypeConverter *typeConverter,
                            ConversionPatternRewriter &rewriter, Value thread);
 namespace {
-struct ScaledDotOpConversion : public ConvertOpToLLVMPattern<triton::DotScaledOp> {
+struct ScaledDotOpConversion
+    : public ConvertOpToLLVMPattern<triton::DotScaledOp> {
   using ConvertOpToLLVMPattern<triton::DotScaledOp>::ConvertOpToLLVMPattern;
-int computeCapability;
+  int computeCapability;
   ScaledDotOpConversion(LLVMTypeConverter &converter, int computeCapability,
                         PatternBenefit benefit)
       : ConvertOpToLLVMPattern<triton::DotScaledOp>(converter, benefit),
@@ -43,63 +43,9 @@ int computeCapability;
   LogicalResult
   matchAndRewrite(triton::DotScaledOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    llvm::errs() << "\n=== ScaledDotOpConversion START ===\n";
-
-    // Basic operation info
-    llvm::errs() << "Operation: " << op->getName() << "\n";
-    llvm::errs() << "Location: " << op->getLoc() << "\n";
-    llvm::errs() << "computeCapability: " << computeCapability << "\n";
-
-
-
-    // Attributes
-    llvm::errs() << "\n--- Attributes ---\n";
-    llvm::errs() << "AElemType: " << static_cast<int>(op.getAElemType()) << "\n";
-    llvm::errs() << "BElemType: " << static_cast<int>(op.getBElemType()) << "\n";
-    llvm::errs() << "FastMath: " << op.getFastMath() << "\n";
-    llvm::errs() << "LhsKPack: " << op.getLhsKPack() << "\n";
-    llvm::errs() << "RhsKPack: " << op.getRhsKPack() << "\n";
-
-    // All attributes
-    llvm::errs() << "\n--- All Attributes ---\n";
-    for (const auto& attr : op->getAttrs()) {
-      llvm::errs() << "  " << attr.getName() << ": " << attr.getValue() << "\n";
-    }
-
-    // Shape information
-    llvm::errs() << "\n--- Shape Information ---\n";
-    auto AShapePerCTA = getShapePerCTA(op.getA().getType());
-    llvm::errs() << "A shape per CTA: [";
-    for (size_t i = 0; i < AShapePerCTA.size(); ++i) {
-      llvm::errs() << AShapePerCTA[i];
-      if (i < AShapePerCTA.size() - 1) llvm::errs() << ", ";
-    }
-    llvm::errs() << "]\n";
-
-    auto resultShapePerCTA = getShapePerCTA(op.getType());
-    llvm::errs() << "Result shape per CTA: [";
-    for (size_t i = 0; i < resultShapePerCTA.size(); ++i) {
-      llvm::errs() << resultShapePerCTA[i];
-      if (i < resultShapePerCTA.size() - 1) llvm::errs() << ", ";
-    }
-    llvm::errs() << "]\n";
-
-    // Check if MMA encoding
-    if (auto mmaLayout = dyn_cast<NvidiaMmaEncodingAttr>(
-            cast<RankedTensorType>(op.getType()).getEncoding())) {
-      llvm::errs() << "\n--- MMA Encoding Info ---\n";
-      llvm::errs() << "MMA versionMajor: " << mmaLayout.getVersionMajor() << "\n";
-      llvm::errs() << "MMA versionMinor: " << mmaLayout.getVersionMinor() << "\n";
-      llvm::errs() << "MMA warpsPerCTA: [";
-      auto warps = mmaLayout.getWarpsPerCTA();
-      for (size_t i = 0; i < warps.size(); ++i) {
-        llvm::errs() << warps[i];
-        if (i < warps.size() - 1) llvm::errs() << ", ";
-      }
-      llvm::errs() << "]\n";
-    }
-
     Location loc = op->getLoc();
+    auto AShapePerCTA = getShapePerCTA(op.getA().getType());
+
     Value A = op.getA();
     Value D = op.getResult();
 
@@ -107,10 +53,10 @@ int computeCapability;
     unsigned K = AShapePerCTA[reduceAxis];
     bool isOuter = K == 1;
     NvidiaMmaEncodingAttr mmaLayout = dyn_cast<NvidiaMmaEncodingAttr>(
-      cast<RankedTensorType>(D.getType()).getEncoding());
+        cast<RankedTensorType>(D.getType()).getEncoding());
 
     return convertMMA(op, adaptor, getTypeConverter(), rewriter,
-                          mmaLayout.isTuring(), false);
+                      mmaLayout.isTuring(), false);
   }
 };
 
@@ -184,19 +130,25 @@ struct WarpGroupDotOpConversion
       auto rhsKPackAttr = op->getAttr("triton.rhs_k_pack");
 
       if (!aElemTypeAttr || !bElemTypeAttr) {
-        return op.emitError("Scaled WarpGroupDotOp missing element type attributes");
+        return op.emitError(
+            "Scaled WarpGroupDotOp missing element type attributes");
       }
 
       // Get element types from attributes
       int aElemType = cast<IntegerAttr>(aElemTypeAttr).getInt();
       int bElemType = cast<IntegerAttr>(bElemTypeAttr).getInt();
-      bool lhsKPack = lhsKPackAttr ? cast<BoolAttr>(lhsKPackAttr).getValue() : true;
-      bool rhsKPack = rhsKPackAttr ? cast<BoolAttr>(rhsKPackAttr).getValue() : true;
+      bool lhsKPack =
+          lhsKPackAttr ? cast<BoolAttr>(lhsKPackAttr).getValue() : true;
+      bool rhsKPack =
+          rhsKPackAttr ? cast<BoolAttr>(rhsKPackAttr).getValue() : true;
 
-      llvm::errs() << "Scaled WGMMA: aElemType=" << aElemType << ", bElemType=" << bElemType << "\n";
+      llvm::errs() << "Scaled WGMMA: aElemType=" << aElemType
+                   << ", bElemType=" << bElemType << "\n";
 
-      // For now, return an error with detailed info - TODO: implement scaled WGMMA
-      return op.emitError("Scaled WarpGroupDotOp conversion not yet implemented");
+      // For now, return an error with detailed info - TODO: implement scaled
+      // WGMMA
+      return op.emitError(
+          "Scaled WarpGroupDotOp conversion not yet implemented");
     }
 
     // Here we assume the DotOp's operands always comes from shared memory.
@@ -285,5 +237,6 @@ void mlir::triton::NVIDIA::populateDotOpToLLVMPatterns(
   patterns.add<DotOpConversion>(typeConverter, computeCapability, benefit);
   patterns.add<WarpGroupDotOpConversion>(typeConverter, benefit);
   patterns.add<WarpGroupDotWaitOpConversion>(typeConverter, benefit);
-  patterns.add<ScaledDotOpConversion>(typeConverter, computeCapability, benefit);
+  patterns.add<ScaledDotOpConversion>(typeConverter, computeCapability,
+                                      benefit);
 }

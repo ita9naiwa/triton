@@ -204,16 +204,13 @@ private:
   }
 };
 
-struct TritonDotScaledPattern : public OpConversionPattern<triton::DotScaledOp> {
+struct TritonDotScaledPattern
+    : public OpConversionPattern<triton::DotScaledOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(triton::DotScaledOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-
-    llvm::errs() << "DEBUG::내가 실행된다 하하 TritonDotScaledPattern\n";
-
-    // Module operation을 찾아서 compute capability 가져오기
     auto moduleOp = op->getParentOfType<ModuleOp>();
     if (!moduleOp) {
       return rewriter.notifyMatchFailure(op, "Could not find parent ModuleOp");
@@ -221,13 +218,14 @@ struct TritonDotScaledPattern : public OpConversionPattern<triton::DotScaledOp> 
 
     int computeCapability = getNVIDIAComputeCapability(moduleOp);
 
-    llvm::errs() << "DEBUG::computeCapability=" << computeCapability << ", checking if == 120\n";
+    llvm::errs() << "DEBUG::computeCapability=" << computeCapability
+                 << ", checking if == 120\n";
     if (computeCapability != 120) {
-      llvm::errs() << "DEBUG::FAILED - computeCapability=" << computeCapability << " is not 120\n";
+      llvm::errs() << "DEBUG::FAILED - computeCapability=" << computeCapability
+                   << " is not 120\n";
       return failure();
     }
 
-    llvm::errs() << "DEBUG::computeCapability=" << computeCapability << "\n";
     RankedTensorType origType = op.getType();
     auto origShape = origType.getShape();
     auto typeConverter = getTypeConverter<TritonGPUTypeConverter>();
@@ -272,9 +270,10 @@ struct TritonDotScaledPattern : public OpConversionPattern<triton::DotScaledOp> 
     Value c = adaptor.getC();
     Value aScale = adaptor.getAScale();
     Value bScale = adaptor.getBScale();
-    llvm::errs() << "DEBUG::aEncoding=" << aEncoding << ", bEncoding=" << bEncoding << "\n";
+
     // Convert A operand to DotOperandEncoding if needed
-    if (!aEncoding || !mlir::isa<triton::gpu::DotOperandEncodingAttr>(aEncoding)) {
+    if (!aEncoding ||
+        !mlir::isa<triton::gpu::DotOperandEncodingAttr>(aEncoding)) {
       Attribute encoding = triton::gpu::DotOperandEncodingAttr::get(
           getContext(), 0, dEncoding, aEltType);
       auto dstType = aType.cloneWithEncoding(encoding);
@@ -282,7 +281,8 @@ struct TritonDotScaledPattern : public OpConversionPattern<triton::DotScaledOp> 
     }
 
     // Convert B operand to DotOperandEncoding if needed
-    if (!bEncoding || !mlir::isa<triton::gpu::DotOperandEncodingAttr>(bEncoding)) {
+    if (!bEncoding ||
+        !mlir::isa<triton::gpu::DotOperandEncodingAttr>(bEncoding)) {
       Attribute encoding = triton::gpu::DotOperandEncodingAttr::get(
           getContext(), 1, dEncoding, bEltType);
       auto dstType = bType.cloneWithEncoding(encoding);
@@ -294,11 +294,9 @@ struct TritonDotScaledPattern : public OpConversionPattern<triton::DotScaledOp> 
     addNamedAttrs(rewriter.replaceOpWithNewOp<triton::DotScaledOp>(
                       op, retType, a, b, c, aScale, bScale,
                       adaptor.getAElemType(), adaptor.getBElemType(),
-                      adaptor.getFastMath(), adaptor.getLhsKPack(), adaptor.getRhsKPack()),
+                      adaptor.getFastMath(), adaptor.getLhsKPack(),
+                      adaptor.getRhsKPack()),
                   adaptor.getAttributes());
-    llvm::errs() << "DEBUG::내가 실행된다 하하 TritonDotScaledPattern 끝\n";
-    llvm::errs() << "DEBUG::a=" << a << ", b=" << b << ", c=" << c << "\n";
-    llvm::errs() << "DEBUG::aScale=" << aScale << ", bScale=" << bScale << "\n";
     return success();
   }
 };
@@ -618,7 +616,6 @@ public:
 void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
                             RewritePatternSet &patterns, unsigned numCTAs) {
   MLIRContext *context = patterns.getContext();
-  patterns.insert<TritonDotScaledPattern>(typeConverter, context, 2);
   patterns.insert< // TODO: view should have custom pattern that views the
                    // layout
       // clang-format off
@@ -648,6 +645,7 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
       TritonExpandDimsPattern,
       TritonTransPattern,
       TritonDotPattern,
+      TritonDotScaledPattern,
       GatherScatterOpPattern<DescriptorGatherOp>,
       GatherScatterOpPattern<DescriptorScatterOp>,
       GenericOpPattern<triton::LoadOp>,
