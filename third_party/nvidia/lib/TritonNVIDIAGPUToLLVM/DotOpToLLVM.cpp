@@ -22,8 +22,8 @@ static void addNamedAttrs(Operation *op, DictionaryAttr dictAttrs) {
     if (!op->hasAttr(attr.getName()))
       op->setAttr(attr.getName(), attr.getValue());
 }
-
-LogicalResult convertMMA(triton::DotOp op, triton::DotOp::Adaptor adaptor,
+template <typename DotOp, typename DotOpAdaptor>
+LogicalResult convertMMA(DotOp op, DotOpAdaptor adaptor,
                          const LLVMTypeConverter *typeConverter,
                          ConversionPatternRewriter &rewriter, bool isTuring,
                          bool isHopperF64);
@@ -50,41 +50,7 @@ int computeCapability;
     llvm::errs() << "Location: " << op->getLoc() << "\n";
     llvm::errs() << "computeCapability: " << computeCapability << "\n";
 
-    // Result type and encoding
-    llvm::errs() << "결과 타입: " << op.getType() << "\n";
-    llvm::errs() << "결과 인코딩: " << op.getType().getEncoding() << "\n";
 
-    // Operand types (original values)
-    llvm::errs() << "\n--- Original Operands ---\n";
-    llvm::errs() << "A 타입: " << op.getA().getType() << "\n";
-    llvm::errs() << "B 타입: " << op.getB().getType() << "\n";
-    llvm::errs() << "C 타입: " << op.getC().getType() << "\n";
-    if (op.getAScale()) {
-      llvm::errs() << "AScale 타입: " << op.getAScale().getType() << "\n";
-    } else {
-      llvm::errs() << "AScale: null\n";
-    }
-    if (op.getBScale()) {
-      llvm::errs() << "BScale 타입: " << op.getBScale().getType() << "\n";
-    } else {
-      llvm::errs() << "BScale: null\n";
-    }
-
-    // Adapted operands (converted by type converter)
-    llvm::errs() << "\n--- Adapted Operands (LLVM converted) ---\n";
-    llvm::errs() << "adaptedA 타입: " << adaptor.getA().getType() << "\n";
-    llvm::errs() << "adaptedB 타입: " << adaptor.getB().getType() << "\n";
-    llvm::errs() << "adaptedC 타입: " << adaptor.getC().getType() << "\n";
-    if (adaptor.getAScale()) {
-      llvm::errs() << "adaptedAScale 타입: " << adaptor.getAScale().getType() << "\n";
-    } else {
-      llvm::errs() << "adaptedAScale: null\n";
-    }
-    if (adaptor.getBScale()) {
-      llvm::errs() << "adaptedBScale 타입: " << adaptor.getBScale().getType() << "\n";
-    } else {
-      llvm::errs() << "adaptedBScale: null\n";
-    }
 
     // Attributes
     llvm::errs() << "\n--- Attributes ---\n";
@@ -133,14 +99,18 @@ int computeCapability;
       llvm::errs() << "]\n";
     }
 
-    // Check if blocked encoding
-    if (isa<BlockedEncodingAttr>(cast<RankedTensorType>(op.getType()).getEncoding())) {
-      llvm::errs() << "\n--- Blocked Encoding detected ---\n";
-    }
+    Location loc = op->getLoc();
+    Value A = op.getA();
+    Value D = op.getResult();
 
-    llvm::errs() << "\n=== ScaledDotOpConversion END ===\n";
-    llvm::errs() << "하하하하 Done - no matching encoding\n";
-    return failure();
+    size_t reduceAxis = 1;
+    unsigned K = AShapePerCTA[reduceAxis];
+    bool isOuter = K == 1;
+    NvidiaMmaEncodingAttr mmaLayout = dyn_cast<NvidiaMmaEncodingAttr>(
+      cast<RankedTensorType>(D.getType()).getEncoding());
+
+    return convertMMA(op, adaptor, getTypeConverter(), rewriter,
+                          mmaLayout.isTuring(), false);
   }
 };
 

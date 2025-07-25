@@ -664,6 +664,36 @@ public:
     auto oldAcc = dotOp.getOperand(2);
     auto newAcc = rewriter.create<ConvertLayoutOp>(oldAcc.getLoc(), newRetType, oldAcc);
 
+    // 🔥 A, B 텐서를 새로운 DotOperandEncodingAttr로 변환 (핵심 수정!)
+    auto getDotOperand = [&](Value v, int opIdx, int bitwidth) -> Value {
+      auto minType = bitwidth > 0 ? rewriter.getIntegerType(bitwidth) : v.getType();
+      auto vType = cast<RankedTensorType>(v.getType());
+      auto newVEncoding = DotOperandEncodingAttr::get(
+          v.getContext(), opIdx, newRetType.getEncoding(), minType);
+      auto newVType = vType.cloneWithEncoding(newVEncoding);
+      return rewriter.create<ConvertLayoutOp>(v.getLoc(), newVType, v);
+    };
+
+    // kWidth 계산 (일반 BlockedToMMA와 동일한 방식)
+    int kWidth = 1; // 기본값
+    if (mlir::isa<DotOperandEncodingAttr>(oldAType.getEncoding())) {
+      kWidth = cast<DotOperandEncodingAttr>(oldAType.getEncoding()).getKWidth();
+    }
+
+    // A, B 텐서 변환 (이게 핵심!)
+    int bitwidthA = oldAType.getElementType().getIntOrFloatBitWidth();
+    int bitwidthB = oldBType.getElementType().getIntOrFloatBitWidth();
+    int minBitwidth = std::min(bitwidthA, bitwidthB);
+
+    Value newA = getDotOperand(a, 0, minBitwidth);  // opIdx=0 for A
+    Value newB = getDotOperand(b, 1, minBitwidth);  // opIdx=1 for B
+
+    llvm::errs() << "🎯 A, B 텐서를 새로운 DotOperandEncodingAttr로 변환 완료!\n";
+    llvm::errs() << "원본 A 타입: " << oldAType << "\n";
+    llvm::errs() << "새로운 A 타입: " << newA.getType() << "\n";
+    llvm::errs() << "원본 B 타입: " << oldBType << "\n";
+    llvm::errs() << "새로운 B 타입: " << newB.getType() << "\n";
+
     RankedTensorType oldScaleAType = dotOp.getAScale().getType();
     RankedTensorType oldScaleBType = dotOp.getBScale().getType();
 
@@ -694,7 +724,7 @@ public:
     Value newScaleB =
       rewriter.create<ConvertLayoutOp>(loc, newScaleBType, rhsScale);
 
-    auto newDotOp = rewriter.create<triton::DotScaledOp>(loc, newRetType, a, b, newAcc, newScaleA, newScaleB, dotOp.getAElemType(), dotOp.getBElemType(), dotOp.getFastMath(), dotOp.getLhsKPack(), dotOp.getRhsKPack());
+    auto newDotOp = rewriter.create<triton::DotScaledOp>(loc, newRetType, newA, newB, newAcc, newScaleA, newScaleB, dotOp.getAElemType(), dotOp.getBElemType(), dotOp.getFastMath(), dotOp.getLhsKPack(), dotOp.getRhsKPack());
     rewriter.replaceOpWithNewOp<ConvertLayoutOp>(dotOp, oldRetType, newDotOp.getResult());
 
     llvm::errs() << "하하하 ScaledBlockedToMMA 끝\n";

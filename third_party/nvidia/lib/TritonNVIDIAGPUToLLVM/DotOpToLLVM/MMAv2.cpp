@@ -2,8 +2,11 @@
 #include "Utility.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
 #include "llvm/ADT/SmallVector.h"
+#include <type_traits>
+#include <algorithm>
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -322,6 +325,15 @@ static Type getMmaRetType(TensorCoreType mmaType, MLIRContext *ctx) {
     return i32x4Ty;
   case TensorCoreType::FP64_FP64_FP64_FP64:
     return fp64x4Ty;
+  case TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_1X:
+  case TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_1X:
+  case TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_1X:
+  case TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_1X:
+  case TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_2X:
+  case TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_2X:
+  case TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_2X:
+  case TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_2X:
+    return fp32x4Ty;
   default:
     llvm::report_fatal_error("Unsupported mma type found");
   }
@@ -329,7 +341,8 @@ static Type getMmaRetType(TensorCoreType mmaType, MLIRContext *ctx) {
   return Type{};
 }
 
-static TensorCoreType getMmaType(triton::DotOp op) {
+template <typename DotOp>
+static TensorCoreType getMmaType(DotOp op) {
   auto aTy = op.getA().getType();
   auto bTy = op.getB().getType();
   // d = a*b + c
@@ -341,20 +354,38 @@ static TensorCoreType getMmaType(triton::DotOp op) {
     if (aTy.getElementType().isBF16() && bTy.getElementType().isBF16())
       return TensorCoreType::FP32_BF16_BF16_FP32;
     if (llvm::isa<Float8E5M2Type>(aTy.getElementType()) &&
-        llvm::isa<Float8E5M2Type>(bTy.getElementType()))
+        llvm::isa<Float8E5M2Type>(bTy.getElementType())) {
+      if constexpr (std::is_same_v<DotOp, triton::DotScaledOp>) {
+        return TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_1X;
+      }
       return TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32;
+    }
     if (llvm::isa<Float8E5M2Type>(aTy.getElementType()) &&
-        llvm::isa<Float8E4M3FNType>(bTy.getElementType()))
+        llvm::isa<Float8E4M3FNType>(bTy.getElementType())) {
+      if constexpr (std::is_same_v<DotOp, triton::DotScaledOp>) {
+        return TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_1X;
+      }
       return TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32;
+    }
     if (llvm::isa<Float8E4M3FNType>(aTy.getElementType()) &&
-        llvm::isa<Float8E5M2Type>(bTy.getElementType()))
+        llvm::isa<Float8E5M2Type>(bTy.getElementType())) {
+      if constexpr (std::is_same_v<DotOp, triton::DotScaledOp>) {
+        return TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_1X;
+      }
       return TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32;
+    }
     if (llvm::isa<Float8E4M3FNType>(aTy.getElementType()) &&
-        llvm::isa<Float8E4M3FNType>(bTy.getElementType()))
+        llvm::isa<Float8E4M3FNType>(bTy.getElementType())) {
+      if constexpr (std::is_same_v<DotOp, triton::DotScaledOp>) {
+        return TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_1X;
+      }
       return TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32;
-    if (aTy.getElementType().isF32() && bTy.getElementType().isF32() &&
-        op.getInputPrecision() == InputPrecision::TF32)
-      return TensorCoreType::FP32_TF32_TF32_FP32;
+    }
+    if constexpr (std::is_same_v<DotOp, triton::DotOp>) {
+      if (aTy.getElementType().isF32() && bTy.getElementType().isF32() &&
+          op.getInputPrecision() == InputPrecision::TF32)
+        return TensorCoreType::FP32_TF32_TF32_FP32;
+    }
   } else if (dTy.getElementType().isInteger(32)) {
     if (aTy.getElementType().isInteger(8) && bTy.getElementType().isInteger(8))
       return TensorCoreType::INT32_INT8_INT8_INT32;
@@ -438,23 +469,30 @@ inline static const std::map<TensorCoreType, std::string> mmaInstrPtxHopper = {
 };
 
 inline static const std::map<TensorCoreType, std::string> mmaInstrPtxScaled = {
-  { TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_1X,
-    "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::1X.f32.e5m2.e5m2.f32.ue8m0" },
-  { TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_1X,
-    "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::1X.f32.e5m2.e4m3.f32.ue8m0" },
-  { TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_1X,
-    "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::1X.f32.e4m3.e5m2.f32.ue8m0" },
-  { TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_1X,
-    "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::1X.f32.e4m3.e4m3.f32.ue8m0" },
-  { TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_2X,
-    "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::2X.f32.e5m2.e5m2.f32.ue8m0" },
-  { TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_2X,
-    "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::2X.f32.e5m2.e4m3.f32.ue8m0" },
-  { TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_2X,
-    "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::2X.f32.e4m3.e5m2.f32.ue8m0" },
-  { TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_2X,
-    "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::2X.f32.e4m3.e4m3.f32.ue8m0" }
-};
+    {TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_1X,
+     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
+     "1X.f32.e5m2.e5m2.f32.ue8m0"},
+    {TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_1X,
+     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
+     "1X.f32.e5m2.e4m3.f32.ue8m0"},
+    {TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_1X,
+     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
+     "1X.f32.e4m3.e5m2.f32.ue8m0"},
+    {TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_1X,
+     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
+     "1X.f32.e4m3.e4m3.f32.ue8m0"},
+    {TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_2X,
+     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
+     "2X.f32.e5m2.e5m2.f32.ue8m0"},
+    {TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_2X,
+     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
+     "2X.f32.e5m2.e4m3.f32.ue8m0"},
+    {TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_2X,
+     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
+     "2X.f32.e4m3.e5m2.f32.ue8m0"},
+    {TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_2X,
+     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
+     "2X.f32.e4m3.e4m3.f32.ue8m0"}};
 static void callMmaTuringInt8(PTXBuilder &builder, int b, int m, int n, int k,
                               mlir::triton::PTXInstr &mma, unsigned numMmaRets,
                               unsigned colsPerThread, int numCPackedElem,
@@ -596,14 +634,109 @@ static void callMmaV2(PTXBuilder &builder, int b, int m, int n, int k,
   mma(retArgs, aArgs, bArgs, cArgs);
 }
 
-LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
-  ConversionPatternRewriter &rewriter, Location loc,
-  Value a, Value b, Value c, Value d, Value loadedA,
-  Value loadedB, Value loadedC, DotOp op,
-  DotOpAdaptor adaptor, bool isTuring,
-  bool isHopperF64) {
+static void callMmaScaled(PTXBuilder &builder, int b, int m, int n, int k,
+                         mlir::triton::PTXInstr &mma, unsigned numMmaRets,
+                         unsigned colsPerThread, int numCPackedElem,
+                         unsigned batchOffset, ValueTableV2 &ha, ValueTableV2 &hb,
+                         const SmallVector<Value> &fc,
+                         const SmallVector<Value> &aScale,
+                         const SmallVector<Value> &bScale,
+                         const std::string &constraintRet,
+                         const std::string &constraintAB, int numVecK) {
+  auto retArgs = builder.newListOperand(numMmaRets, constraintRet);
+  auto cArgs = builder.newListOperand();
+
+  for (int i = 0; i < numMmaRets; ++i) {
+    cArgs->listAppend(builder.newOperand(
+        fc[(m * colsPerThread + 4 * n) / numCPackedElem + i + batchOffset * b],
+        std::to_string(i)));
+  }
+
+  auto aArgs = builder.newListOperand();
+  for (int vk = 0; vk < numVecK; ++vk) {
+    aArgs->listAppend(builder.newOperand(ha[{b, m, k + vk}], constraintAB));
+    aArgs->listAppend(builder.newOperand(ha[{b, m + 1, k + vk}], constraintAB));
+  }
+
+  auto bArgs = builder.newListOperand();
+  for (int vk = 0; vk < numVecK; ++vk) {
+    bArgs->listAppend(builder.newOperand(hb[{b, n, k + vk}], constraintAB));
+  }
+
+  PTXBuilder::Operand *scaleAData = nullptr;
+  PTXBuilder::Operand *scaleBData = nullptr;
+
+  if (!aScale.empty()) {
+    int baseIdx = (m * colsPerThread + 4 * n) / numCPackedElem;
+    int scaleIdx = (baseIdx < static_cast<int>(aScale.size())) ? baseIdx : static_cast<int>(aScale.size() - 1);
+
+    scaleAData = builder.newOperand(aScale[scaleIdx], "r");
+  }
+
+  if (!bScale.empty()) {
+    int baseIdx = (m * colsPerThread + 4 * n) / numCPackedElem;
+    int scaleIdx = (baseIdx < static_cast<int>(bScale.size())) ? baseIdx : static_cast<int>(bScale.size() - 1);
+
+    scaleBData = builder.newOperand(bScale[scaleIdx], "r");
+  }
+
+  auto aBidTidArgs = builder.newListOperand();
+  aBidTidArgs->listAppend(builder.newConstantOperand("0"));
+  aBidTidArgs->listAppend(builder.newConstantOperand("1"));
+
+  auto bBidTidArgs = builder.newListOperand();
+  bBidTidArgs->listAppend(builder.newConstantOperand("0"));
+  bBidTidArgs->listAppend(builder.newConstantOperand("1"));
+
+  SmallVector<PTXBuilder::Operand *> allOperands;
+  allOperands.push_back(retArgs);
+  allOperands.push_back(aArgs);
+  allOperands.push_back(bArgs);
+  allOperands.push_back(cArgs);
+
+  if (scaleAData) {
+    allOperands.push_back(scaleAData);
+    allOperands.push_back(aBidTidArgs);
+  }
+  if (scaleBData) {
+    allOperands.push_back(scaleBData);
+    allOperands.push_back(bBidTidArgs);
+  }
+
+  mma(allOperands);
+}
+
+template <typename DotOp, typename DotOpAdaptor>
+LogicalResult
+convertDot(const LLVMTypeConverter *typeConverter,
+           ConversionPatternRewriter &rewriter, Location loc, Value a, Value b,
+           Value c, Value d, Value loadedA, Value loadedB, Value loadedC,
+           DotOp op, DotOpAdaptor adaptor, bool isTuring, bool isHopperF64) {
   auto tb = TritonLLVMOpBuilder(loc, rewriter);
   MLIRContext *ctx = c.getContext();
+
+  SmallVector<Value> unpackedAScale, unpackedBScale;
+
+  if constexpr (std::is_same_v<DotOp, triton::DotScaledOp>) {
+
+    Value aScale = op.getAScale();
+    Value bScale = op.getBScale();
+
+    if (aScale) {
+      auto aScaleAdaptorValue = adaptor.getAScale();
+      if (aScaleAdaptorValue) {
+        unpackedAScale = unpackLLElements(loc, aScaleAdaptorValue, rewriter);
+      }
+    }
+
+    if (bScale) {
+      auto bScaleAdaptorValue = adaptor.getBScale();
+      if (bScaleAdaptorValue) {
+        unpackedBScale = unpackLLElements(loc, bScaleAdaptorValue, rewriter);
+      }
+    }
+  }
+
   auto aTensorTy = cast<RankedTensorType>(a.getType());
   auto bTensorTy = cast<RankedTensorType>(b.getType());
   auto dTensorTy = cast<RankedTensorType>(d.getType());
@@ -611,141 +744,186 @@ LogicalResult convertDot(const LLVMTypeConverter *typeConverter,
   auto aShapePerCTA = triton::gpu::getShapePerCTA(aTensorTy);
   auto bShapePerCTA = triton::gpu::getShapePerCTA(bTensorTy);
   auto dShapePerCTA = triton::gpu::getShapePerCTA(dTensorTy);
-
   int bitwidth = aTensorTy.getElementType().getIntOrFloatBitWidth();
   auto dotOpA = cast<DotOperandEncodingAttr>(aTensorTy.getEncoding());
   int kWidth = dotOpA.getKWidth();
   auto repA =
-  cast<NvidiaMmaEncodingAttr>(dotOpA.getParent())
-  .getRepForOperand(aShapePerCTA, bitwidth, kWidth, dotOpA.getOpIdx());
+      cast<NvidiaMmaEncodingAttr>(dotOpA.getParent())
+          .getRepForOperand(aShapePerCTA, bitwidth, kWidth, dotOpA.getOpIdx());
   auto dotOpB = cast<DotOperandEncodingAttr>(bTensorTy.getEncoding());
   auto repB =
-  cast<NvidiaMmaEncodingAttr>(dotOpB.getParent())
-  .getRepForOperand(bShapePerCTA, bitwidth, kWidth, dotOpB.getOpIdx());
-
+      cast<NvidiaMmaEncodingAttr>(dotOpB.getParent())
+          .getRepForOperand(bShapePerCTA, bitwidth, kWidth, dotOpB.getOpIdx());
+  llvm::errs() << "repA=" << repA[0] << "," << repA[1] << "," << repA[2] << "\n";
+  llvm::errs() << "repB=" << repB[0] << "," << repB[1] << "," << repB[2] << "\n";
   assert(repA[2] == repB[1]);
   assert(repA[0] == repB[0]);
   int repM = repA[1], repN = repB[2], repK = repA[2];
   int repBatch = repA[0];
-
+  llvm::errs() << "repM=" << repM << "\n";
+  llvm::errs() << "repN=" << repN << "\n";
+  llvm::errs() << "repK=" << repK << "\n";
+  llvm::errs() << "repBatch=" << repBatch << "\n";
   // We can reuse the same iteration order in
   // getValuesFromDotOperandLayoutStruct as both a and b are K-major
   assert(dotOpA.getRepOrder() == getOrderForDotOperand(dotOpA.getOpIdx(),
-                                  aShapePerCTA.size(),
-                                  /*kContig=*/true));
+                                                       aShapePerCTA.size(),
+                                                       /*kContig=*/true));
   auto ha = getValuesFromDotOperandLayoutStruct(typeConverter, loc, rewriter,
-                          loadedA, repBatch, repM, repK,
-                          aTensorTy, isHopperF64);
+                                                loadedA, repBatch, repM, repK,
+                                                aTensorTy, isHopperF64);
 
   assert(dotOpB.getRepOrder() == getOrderForDotOperand(dotOpB.getOpIdx(),
-                                  bShapePerCTA.size(),
-                                  /*kContig=*/true));
+                                                       bShapePerCTA.size(),
+                                                       /*kContig=*/true));
   auto hb = getValuesFromDotOperandLayoutStruct(typeConverter, loc, rewriter,
-                          loadedB, repBatch, repN, repK,
-                          bTensorTy, isHopperF64);
+                                                loadedB, repBatch, repN, repK,
+                                                bTensorTy, isHopperF64);
 
   auto fc = unpackLLElements(loc, loadedC, rewriter);
-
+  llvm::errs() << "fc=" << fc.size() << "\n";
   int bitwidthRet = dTensorTy.getElementType().getIntOrFloatBitWidth();
   auto numMmaRets = bitwidthRet == 64 ? 4 : bitwidthRet / 8;
   int numCPackedElem = 4 / numMmaRets;
 
   auto mmaType = getMmaType(op);
 
-  const auto &mmaInstructions = isTuring      ? mmaInstrPtxTuring
-          : isHopperF64 ? mmaInstrPtxHopper
-                        : mmaInstrPtxAmpere;
+  const auto &mmaInstructions =
+      [&]() -> const std::map<TensorCoreType, std::string>& {
+        if constexpr (std::is_same_v<DotOp, triton::DotScaledOp>) {
+          if (mmaType >= TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_1X &&
+              mmaType <= TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_2X) {
+            return mmaInstrPtxScaled;
+          }
+        }
+        return isTuring ? mmaInstrPtxTuring
+               : isHopperF64 ? mmaInstrPtxHopper
+               : mmaInstrPtxAmpere;
+      }();
   if (mmaInstructions.find(mmaType) == mmaInstructions.end()) {
-  return emitError(loc, "Unsupported MMA instruction for the given mma type");
+    return emitError(loc, "Unsupported MMA instruction for the given mma type");
   }
   auto rank = dTensorTy.getRank();
   auto elemsPerThread = triton::gpu::getElemsPerThread(dTensorTy);
   auto batchOffset =
-  elemsPerThread[rank - 2] * elemsPerThread[rank - 1] / numCPackedElem;
+      elemsPerThread[rank - 2] * elemsPerThread[rank - 1] / numCPackedElem;
   auto callMma = [&](unsigned b, unsigned m, unsigned n, unsigned k) {
-  unsigned colsPerThread = repN * 2;
-  PTXBuilder builder;
-  auto &mma = *builder.create(mmaInstructions.at(mmaType));
-  // using =r for float32 works but leads to less readable ptx.
-  bool isIntMMA = dTensorTy.getElementType().isInteger(32);
-  bool isAccF16 = dTensorTy.getElementType().isF16();
-  bool isFp64MMA = dTensorTy.getElementType().isF64();
+    unsigned colsPerThread = repN * 2;
+    PTXBuilder builder;
+    auto &mma = *builder.create(mmaInstructions.at(mmaType));
+    // using =r for float32 works but leads to less readable ptx.
+    bool isIntMMA = dTensorTy.getElementType().isInteger(32);
+    bool isAccF16 = dTensorTy.getElementType().isF16();
+    bool isFp64MMA = dTensorTy.getElementType().isF64();
+    if constexpr (std::is_same_v<DotOp, triton::DotOp>) {
+      if (isTuring) {
+        assert(b == 0 && "Turing only supports batch size 1");
+        if (isIntMMA) // Turing int8
+          callMmaTuringInt8(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
+                            numCPackedElem, ha, hb, fc);
+        else // Turing fp16
+          callMmaTuringFp16(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
+                            numCPackedElem, ha, hb, fc, isAccF16);
+      } else { // Ampere and later
+        if (isFp64MMA) {
+          if (!isHopperF64) {
+            callMmaAmpereFp64(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
+                              numCPackedElem, batchOffset, ha, hb, fc);
+          } else {
+            callMmaV2(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
+                      numCPackedElem, batchOffset, ha, hb, fc, "=d", "d", 4);
+          }
+        } else {
+          callMmaV2(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
+                    numCPackedElem, batchOffset, ha, hb, fc,
+                    isIntMMA || isAccF16 ? "=r" : "=f", "r", 2);
+        }
+      }
+    } else if constexpr (std::is_same_v<DotOp, triton::DotScaledOp>) {
+      callMmaScaled(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
+                    numCPackedElem, batchOffset, ha, hb, fc,
+                    unpackedAScale, unpackedBScale,
+                    isIntMMA || isAccF16 ? "=r" : "=f", "r", 2);
+    }
 
-  if (isTuring) {
-  assert(b == 0 && "Turing only supports batch size 1");
-  if (isIntMMA) // Turing int8
-  callMmaTuringInt8(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
-    numCPackedElem, ha, hb, fc);
-  else // Turing fp16
-  callMmaTuringFp16(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
-    numCPackedElem, ha, hb, fc, isAccF16);
-  } else { // Ampere and later
-  if (isFp64MMA) {
-  if (!isHopperF64) {
-  callMmaAmpereFp64(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
-      numCPackedElem, batchOffset, ha, hb, fc);
-  } else {
-  callMmaV2(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
-  numCPackedElem, batchOffset, ha, hb, fc, "=d", "d", 4);
+    Value mmaOut =
+        builder.launch(rewriter, loc, getMmaRetType(mmaType, op.getContext()));
+
+    Type elemTy = cast<LLVM::LLVMStructType>(mmaOut.getType()).getBody()[0];
+    for (int i = 0; i < numMmaRets; ++i) {
+      fc[(m * colsPerThread + 4 * n) / numCPackedElem + i + batchOffset * b] =
+          tb.extract_val(elemTy, mmaOut, i);
+    }
+  };
+
+  for (int b = 0; b < repBatch; ++b)
+    for (int k = 0; k < repK; ++k)
+      for (int m = 0; m < repM; ++m)
+        for (int n = 0; n < repN; ++n) {
+          auto numVecK = bitwidth == 64 ? 4 : 2;
+          callMma(b, 2 * m, n, k * numVecK);
+        }
+
+  Type resElemTy = dTensorTy.getElementType();
+
+  // replace with new packed result
+  Type structTy = LLVM::LLVMStructType::getLiteral(
+      ctx, SmallVector<Type>(fc.size() * numCPackedElem, resElemTy));
+  SmallVector<Value> results(fc.size() * numCPackedElem);
+  for (int i = 0; i < fc.size(); ++i) {
+    for (int j = 0; j < numCPackedElem; ++j) {
+      results[i * numCPackedElem + j] =
+          numCPackedElem > 1
+              ? tb.bitcast(tb.extract_element(fc[i], tb.i32_val(j)), resElemTy)
+              : tb.bitcast(fc[i], resElemTy);
+    }
   }
-  } else {
-  callMmaV2(builder, b, m, n, k, mma, numMmaRets, colsPerThread,
-  numCPackedElem, batchOffset, ha, hb, fc,
-  isIntMMA || isAccF16 ? "=r" : "=f", "r", 2);
-  }
-}
+  Value res = packLLElements(loc, typeConverter, results, rewriter, structTy);
 
-  Value mmaOut =
-  builder.launch(rewriter, loc, getMmaRetType(mmaType, op.getContext()));
+  rewriter.replaceOp(op, res);
 
-  Type elemTy = cast<LLVM::LLVMStructType>(mmaOut.getType()).getBody()[0];
-  for (int i = 0; i < numMmaRets; ++i) {
-    fc[(m * colsPerThread + 4 * n) / numCPackedElem + i + batchOffset * b] =
-    tb.extract_val(elemTy, mmaOut, i);
-  }
-};
-
-for (int b = 0; b < repBatch; ++b)
-for (int k = 0; k < repK; ++k)
-for (int m = 0; m < repM; ++m)
-for (int n = 0; n < repN; ++n) {
-auto numVecK = bitwidth == 64 ? 4 : 2;
-callMma(b, 2 * m, n, k * numVecK);
-}
-
-Type resElemTy = dTensorTy.getElementType();
-
-// replace with new packed result
-Type structTy = LLVM::LLVMStructType::getLiteral(
-ctx, SmallVector<Type>(fc.size() * numCPackedElem, resElemTy));
-SmallVector<Value> results(fc.size() * numCPackedElem);
-for (int i = 0; i < fc.size(); ++i) {
-for (int j = 0; j < numCPackedElem; ++j) {
-results[i * numCPackedElem + j] =
-numCPackedElem > 1
-? tb.bitcast(tb.extract_element(fc[i], tb.i32_val(j)), resElemTy)
-: tb.bitcast(fc[i], resElemTy);
-}
-}
-Value res = packLLElements(loc, typeConverter, results, rewriter, structTy);
-
-rewriter.replaceOp(op, res);
-
-return success();
+  return success();
 }
 
 // Convert to mma.m16n8k?
-LogicalResult convertMMA(triton::DotOp op, triton::DotOp::Adaptor adaptor,
-  const LLVMTypeConverter *typeConverter,
-  ConversionPatternRewriter &rewriter, bool isTuring,
-  bool isHopperF64) {
-assert(mlir::isa<DotOperandEncodingAttr>(op.getA().getType().getEncoding()) &&
-mlir::isa<DotOperandEncodingAttr>(op.getB().getType().getEncoding()) &&
-"Both $a and %b should be DotOperand layout.");
+template <typename DotOp, typename DotOpAdaptor>
+LogicalResult convertMMA(DotOp op, DotOpAdaptor adaptor,
+                         const LLVMTypeConverter *typeConverter,
+                         ConversionPatternRewriter &rewriter, bool isTuring,
+                         bool isHopperF64);
 
-Value loadedC =
-loadC(op.getC(), adaptor.getC(), typeConverter, op.getLoc(), rewriter);
-return convertDot(typeConverter, rewriter, op.getLoc(), op.getA(), op.getB(),
-op.getC(), op.getD(), adaptor.getA(), adaptor.getB(),
-loadedC, op, adaptor, isTuring, isHopperF64);
+template <>
+LogicalResult convertMMA<triton::DotOp, triton::DotOp::Adaptor>(
+    triton::DotOp op, triton::DotOp::Adaptor adaptor,
+    const LLVMTypeConverter *typeConverter,
+    ConversionPatternRewriter &rewriter, bool isTuring, bool isHopperF64) {
+
+  assert(mlir::isa<DotOperandEncodingAttr>(op.getA().getType().getEncoding()) &&
+         mlir::isa<DotOperandEncodingAttr>(op.getB().getType().getEncoding()) &&
+         "Both $a and %b should be DotOperand layout.");
+
+  Value loadedC =
+      loadC(op.getC(), adaptor.getC(), typeConverter, op.getLoc(), rewriter);
+  return convertDot(typeConverter, rewriter, op.getLoc(), op.getA(), op.getB(),
+                    op.getC(), op.getD(), adaptor.getA(), adaptor.getB(),
+                    loadedC, op, adaptor, isTuring, isHopperF64);
+}
+
+template <>
+LogicalResult convertMMA<triton::DotScaledOp, triton::DotScaledOp::Adaptor>(
+    triton::DotScaledOp op, triton::DotScaledOp::Adaptor adaptor,
+    const LLVMTypeConverter *typeConverter,
+    ConversionPatternRewriter &rewriter, bool isTuring, bool isHopperF64) {
+
+  assert(mlir::isa<DotOperandEncodingAttr>(op.getA().getType().getEncoding()) &&
+         mlir::isa<DotOperandEncodingAttr>(op.getB().getType().getEncoding()) &&
+         "Both $a and %b should be DotOperand layout.");
+
+
+
+  Value loadedC =
+      loadC(op.getC(), adaptor.getC(), typeConverter, op.getLoc(), rewriter);
+  return convertDot(typeConverter, rewriter, op.getLoc(), op.getA(), op.getB(),
+                    op.getC(), op.getD(), adaptor.getA(), adaptor.getB(),
+                    loadedC, op, adaptor, isTuring, isHopperF64);
 }
