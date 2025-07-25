@@ -285,6 +285,10 @@ enum class TensorCoreType : uint8_t {
   FP32_FP8E5M2_FP8E4M3FN_FP32_2X,
   FP32_FP8E4M3FN_FP8E5M2_FP32_2X,
   FP32_FP8E4M3FN_FP8E4M3FN_FP32_2X,
+  FP32_FP8E5M2_FP8E5M2_FP32_4X,
+  FP32_FP8E5M2_FP8E4M3FN_FP32_4X,
+  FP32_FP8E4M3FN_FP8E5M2_FP32_4X,
+  FP32_FP8E4M3FN_FP8E4M3FN_FP32_4X,
   //
   NOT_APPLICABLE,
 };
@@ -356,6 +360,30 @@ static TensorCoreType getMmaType(DotOp op) {
     if (llvm::isa<Float8E5M2Type>(aTy.getElementType()) &&
         llvm::isa<Float8E5M2Type>(bTy.getElementType())) {
       if constexpr (std::is_same_v<DotOp, triton::DotScaledOp>) {
+        // Determine 1X/2X/4X variant based on element types and scale types
+        auto aElemType = op.getAElemType();
+        auto bElemType = op.getBElemType();
+
+        if (aElemType == triton::ScaleDotElemType::E2M1 &&
+            bElemType == triton::ScaleDotElemType::E2M1) {
+          // Check scale types for 4X variant
+          auto aScale = op.getAScale();
+          auto bScale = op.getBScale();
+
+          if (aScale && bScale) {
+            auto aScaleElemType = aScale.getType().getElementType();
+            auto bScaleElemType = bScale.getType().getElementType();
+
+            if (llvm::isa<Float8E4M3FNType>(aScaleElemType) &&
+                llvm::isa<Float8E4M3FNType>(bScaleElemType)) {
+              // 4X variant - mxf4nvf4
+              return TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_4X;
+            }
+          }
+          // 2X variant - mxf4
+          return TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_2X;
+        }
+        // 1X variant - mxf8f6f4 (default)
         return TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_1X;
       }
       return TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32;
@@ -363,6 +391,25 @@ static TensorCoreType getMmaType(DotOp op) {
     if (llvm::isa<Float8E5M2Type>(aTy.getElementType()) &&
         llvm::isa<Float8E4M3FNType>(bTy.getElementType())) {
       if constexpr (std::is_same_v<DotOp, triton::DotScaledOp>) {
+        auto aElemType = op.getAElemType();
+        auto bElemType = op.getBElemType();
+
+        if (aElemType == triton::ScaleDotElemType::E2M1 &&
+            bElemType == triton::ScaleDotElemType::E2M1) {
+          auto aScale = op.getAScale();
+          auto bScale = op.getBScale();
+
+          if (aScale && bScale) {
+            auto aScaleElemType = aScale.getType().getElementType();
+            auto bScaleElemType = bScale.getType().getElementType();
+
+            if (llvm::isa<Float8E4M3FNType>(aScaleElemType) &&
+                llvm::isa<Float8E4M3FNType>(bScaleElemType)) {
+              return TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_4X;
+            }
+          }
+          return TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_2X;
+        }
         return TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_1X;
       }
       return TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32;
@@ -370,6 +417,25 @@ static TensorCoreType getMmaType(DotOp op) {
     if (llvm::isa<Float8E4M3FNType>(aTy.getElementType()) &&
         llvm::isa<Float8E5M2Type>(bTy.getElementType())) {
       if constexpr (std::is_same_v<DotOp, triton::DotScaledOp>) {
+        auto aElemType = op.getAElemType();
+        auto bElemType = op.getBElemType();
+
+        if (aElemType == triton::ScaleDotElemType::E2M1 &&
+            bElemType == triton::ScaleDotElemType::E2M1) {
+          auto aScale = op.getAScale();
+          auto bScale = op.getBScale();
+
+          if (aScale && bScale) {
+            auto aScaleElemType = aScale.getType().getElementType();
+            auto bScaleElemType = bScale.getType().getElementType();
+
+            if (llvm::isa<Float8E4M3FNType>(aScaleElemType) &&
+                llvm::isa<Float8E4M3FNType>(bScaleElemType)) {
+              return TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_4X;
+            }
+          }
+          return TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_2X;
+        }
         return TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_1X;
       }
       return TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32;
@@ -377,6 +443,25 @@ static TensorCoreType getMmaType(DotOp op) {
     if (llvm::isa<Float8E4M3FNType>(aTy.getElementType()) &&
         llvm::isa<Float8E4M3FNType>(bTy.getElementType())) {
       if constexpr (std::is_same_v<DotOp, triton::DotScaledOp>) {
+        auto aElemType = op.getAElemType();
+        auto bElemType = op.getBElemType();
+
+        if (aElemType == triton::ScaleDotElemType::E2M1 &&
+            bElemType == triton::ScaleDotElemType::E2M1) {
+          auto aScale = op.getAScale();
+          auto bScale = op.getBScale();
+
+          if (aScale && bScale) {
+            auto aScaleElemType = aScale.getType().getElementType();
+            auto bScaleElemType = bScale.getType().getElementType();
+
+            if (llvm::isa<Float8E4M3FNType>(aScaleElemType) &&
+                llvm::isa<Float8E4M3FNType>(bScaleElemType)) {
+              return TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_4X;
+            }
+          }
+          return TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_2X;
+        }
         return TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_1X;
       }
       return TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32;
@@ -469,30 +554,61 @@ inline static const std::map<TensorCoreType, std::string> mmaInstrPtxHopper = {
 };
 
 inline static const std::map<TensorCoreType, std::string> mmaInstrPtxScaled = {
-    {TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_1X,
-     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
-     "1X.f32.e5m2.e5m2.f32.ue8m0"},
-    {TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_1X,
-     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
-     "1X.f32.e5m2.e4m3.f32.ue8m0"},
-    {TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_1X,
-     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
-     "1X.f32.e4m3.e5m2.f32.ue8m0"},
-    {TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_1X,
-     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
-     "1X.f32.e4m3.e4m3.f32.ue8m0"},
-    {TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_2X,
-     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
-     "2X.f32.e5m2.e5m2.f32.ue8m0"},
-    {TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_2X,
-     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
-     "2X.f32.e5m2.e4m3.f32.ue8m0"},
-    {TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_2X,
-     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
-     "2X.f32.e4m3.e5m2.f32.ue8m0"},
-    {TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_2X,
-     "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::"
-     "2X.f32.e4m3.e4m3.f32.ue8m0"}};
+  // 1X variants
+  {TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_1X,
+   "mma.sync.aligned.m16n8k32.row.col."
+   "kind::mxf8f6f4.block_scale.scale_vec::"
+   "1X.f32.e5m2.e5m2.f32.ue8m0"},
+  {TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_1X,
+   "mma.sync.aligned.m16n8k32.row.col."
+   "kind::mxf8f6f4.block_scale.scale_vec::"
+   "1X.f32.e5m2.e4m3.f32.ue8m0"},
+  {TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_1X,
+   "mma.sync.aligned.m16n8k32.row.col."
+   "kind::mxf8f6f4.block_scale.scale_vec::"
+   "1X.f32.e4m3.e5m2.f32.ue8m0"},
+  {TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_1X,
+   "mma.sync.aligned.m16n8k32.row.col."
+   "kind::mxf8f6f4.block_scale.scale_vec::"
+   "1X.f32.e4m3.e4m3.f32.ue8m0"},
+
+  // 2X variants
+  {TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_2X,
+   "mma.sync.aligned.m16n8k32.row.col."
+   "kind::mxf8f6f4.block_scale.scale_vec::"
+   "2X.f32.e5m2.e5m2.f32.ue8m0"},
+  {TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_2X,
+   "mma.sync.aligned.m16n8k32.row.col."
+   "kind::mxf8f6f4.block_scale.scale_vec::"
+   "2X.f32.e5m2.e4m3.f32.ue8m0"},
+  {TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_2X,
+   "mma.sync.aligned.m16n8k32.row.col."
+   "kind::mxf8f6f4.block_scale.scale_vec::"
+   "2X.f32.e4m3.e5m2.f32.ue8m0"},
+  {TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_2X,
+   "mma.sync.aligned.m16n8k32.row.col."
+   "kind::mxf8f6f4.block_scale.scale_vec::"
+   "2X.f32.e4m3.e4m3.f32.ue8m0"},
+
+  // 4X variants
+  {TensorCoreType::FP32_FP8E5M2_FP8E5M2_FP32_4X,
+   "mma.sync.aligned.m16n8k32.row.col."
+   "kind::mxf8f6f4.block_scale.scale_vec::"
+   "4X.f32.e5m2.e5m2.f32.ue8m0"},
+  {TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_4X,
+   "mma.sync.aligned.m16n8k32.row.col."
+   "kind::mxf8f6f4.block_scale.scale_vec::"
+   "4X.f32.e5m2.e4m3.f32.ue8m0"},
+  {TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_4X,
+   "mma.sync.aligned.m16n8k32.row.col."
+   "kind::mxf8f6f4.block_scale.scale_vec::"
+   "4X.f32.e4m3.e5m2.f32.ue8m0"},
+  {TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_4X,
+   "mma.sync.aligned.m16n8k32.row.col."
+   "kind::mxf8f6f4.block_scale.scale_vec::"
+   "4X.f32.e4m3.e4m3.f32.ue8m0"},
+};
+
 static void callMmaTuringInt8(PTXBuilder &builder, int b, int m, int n, int k,
                               mlir::triton::PTXInstr &mma, unsigned numMmaRets,
                               unsigned colsPerThread, int numCPackedElem,
