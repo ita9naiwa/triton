@@ -217,14 +217,8 @@ struct TritonDotScaledPattern
     }
 
     int computeCapability = getNVIDIAComputeCapability(moduleOp);
-
-    llvm::errs() << "DEBUG::computeCapability=" << computeCapability
-                 << ", checking if == 120\n";
-    if (computeCapability != 120) {
-      llvm::errs() << "DEBUG::FAILED - computeCapability=" << computeCapability
-                   << " is not 120\n";
+    if (computeCapability != 120)
       return failure();
-    }
 
     RankedTensorType origType = op.getType();
     auto origShape = origType.getShape();
@@ -616,9 +610,11 @@ public:
 void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
                             RewritePatternSet &patterns, unsigned numCTAs) {
   MLIRContext *context = patterns.getContext();
+  patterns.insert<TritonDotScaledPattern>(typeConverter, context, 2);
   patterns.insert< // TODO: view should have custom pattern that views the
                    // layout
       // clang-format off
+
       GenericOpPattern<triton::AdvanceOp>,
       GenericOpPattern<triton::MakeTensorPtrOp>,
       GenericOpPattern<triton::ReshapeOp>,
@@ -645,7 +641,6 @@ void populateTritonPatterns(TritonGPUTypeConverter &typeConverter,
       TritonExpandDimsPattern,
       TritonTransPattern,
       TritonDotPattern,
-      TritonDotScaledPattern,
       GatherScatterOpPattern<DescriptorGatherOp>,
       GatherScatterOpPattern<DescriptorScatterOp>,
       GenericOpPattern<triton::LoadOp>,

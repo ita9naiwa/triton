@@ -635,8 +635,6 @@ public:
                   mlir::PatternRewriter &rewriter) const override {
     if (!dotOp.getType().getEncoding() ||
         mlir::isa<NvidiaMmaEncodingAttr>(dotOp.getType().getEncoding())) {
-      llvm::errs() << "DEBUG::dotOp.getType().getEncoding()="
-                   << dotOp.getType().getEncoding() << "\n";
       return failure();
     }
     int numWarps = lookupNumWarps(dotOp);
@@ -971,11 +969,7 @@ public:
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     ModuleOp m = getOperation();
-
-    llvm::errs() << "DEBUG::AccelerateMatmul 패스 시작!\n";
     auto computeCapability = getNVIDIAComputeCapability(m);
-    llvm::errs() << "DEBUG::AccelerateMatmul computeCapability="
-                 << computeCapability << "\n";
     // We could do this generically if we manage to improve the heuristics
     // reverted in these two PRs https://github.com/triton-lang/triton/pull/5834
     // https://github.com/triton-lang/triton/pull/5837
@@ -984,12 +978,13 @@ public:
     mlir::RewritePatternSet patterns(context);
     constexpr int benefitDefault = 1;
     constexpr int benefitMMAv5 = 10;
+    constexpr int benefitSM120 = 20;
+
     patterns.add<BlockedToMMA>(context, computeCapability, benefitDefault);
-    patterns.add<ScaledBlockedToMMA>(context, computeCapability,
-                                     benefitDefault);
+    patterns.add<ScaledBlockedToMMA>(context, computeCapability, benefitSM120);
     populateDecomposeScaledBlockedPatterns(patterns, benefitDefault);
     patterns.add<BlockedToMMAv5, ScaledBlockedToMMAv5>(
-        context, computeCapability, benefitMMAv5);
+        context, computeCapability, benefitSM120);
     if (applyPatternsGreedily(m, std::move(patterns)).failed()) {
       signalPassFailure();
     }
