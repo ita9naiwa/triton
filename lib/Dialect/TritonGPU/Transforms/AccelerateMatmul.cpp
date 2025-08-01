@@ -621,6 +621,16 @@ Value addSmemStageToScaleLoad(Value scale, mlir::PatternRewriter &rewriter) {
     return localLoad;
   }
 }
+
+SmallVector<int, 2> getTransposeOrder(int rank) {
+  assert(rank >= 2);
+  auto transOrder = llvm::to_vector<2>(llvm::seq<int>(rank - 2));
+  transOrder.push_back(rank - 1);
+  transOrder.push_back(rank - 2);
+  return transOrder;
+}
+
+
 class ScaledBlockedToMMA : public mlir::OpRewritePattern<triton::DotScaledOp> {
   int computeCapability;
 
@@ -633,6 +643,7 @@ public:
   mlir::LogicalResult
   matchAndRewrite(triton::DotScaledOp dotOp,
                   mlir::PatternRewriter &rewriter) const override {
+    llvm::errs() <<"이 패스 거치긴 한데?\n";
     if (!dotOp.getType().getEncoding() ||
         mlir::isa<NvidiaMmaEncodingAttr>(dotOp.getType().getEncoding())) {
       return failure();
@@ -682,10 +693,59 @@ public:
 
     Value newA = getDotOperand(a, 0, minBitwidth);
     Value newB = getDotOperand(b, 1, minBitwidth);
+    auto oldEnc = cast<triton::gpu::BlockedEncodingAttr>(oldRetType.getEncoding());
+    auto oldCTALayout = oldEnc.getCTALayout();
+    auto sizePerThread = oldEnc.getSizePerThread();
+    auto threadsPerWarp = oldEnc.getThreadsPerWarp();
+    auto warpsPerCTA = oldEnc.getWarpsPerCTA();
+
+    auto getScaleOperand = [&](TypedValue<RankedTensorType> scale, int opIdx) -> Value {
+      if (!scale)
+        return scale;
+
+       auto scaleType = cast<RankedTensorType>(scale.getType());
+      auto scaleShape = scaleType.getShape();
+      auto ctx = scaleType.getContext();
+      auto CTALayout = getCTALayout(oldRetType.getEncoding());
+      llvm::errs() << "========================================== \n";
+      llvm::errs() << "opIdx: " << opIdx << "\n";
+      llvm::errs() << "shape: " << scaleShape[0] << ", " << scaleShape[1] << "\n";
+      llvm::errs() << "encoding: " << scale.getType().getEncoding() << "\n";
+      scale.dump();
+      SmallVector<unsigned> threadsPerWarp = {32, 1};
+      SmallVector<unsigned> sizePerThread = {1, 1};
+      SmallVector<unsigned> warpsPerCTA = {1, 1};
+      SmallVector<unsigned> order = {0, 1};
+      unsigned totalWarps = product(warpsPerTile);
+
+      int64_t scaleM = scaleShape[0];
+      int64_t scaleN = scaleShape[1];
+
+      if (opIdx == 0) {
+        order = {1, 0};
+        warpsPerCTA = {1, 4};
+        threadsPerWarp = {8, 4};
+      } else if (opIdx == 1) {
+        order ={0, 1};
+        warpsPerCTA = {4, 1};
+        threadsPerWarp = {4, 8};
+      } else {
+        llvm::report_fatal_error("Unsupported scale tensor shape");
+      }
+      auto newEncoding = triton::gpu::BlockedEncodingAttr::get(
+          ctx, sizePerThread, threadsPerWarp, warpsPerCTA, order, CTALayout);
+      auto newType = scaleType.cloneWithEncoding(newEncoding);
+      llvm::errs() << "newType: \n";
+      newType.dump();
+      llvm::errs() << "========================================== \n";
+      return rewriter.create<ConvertLayoutOp>(scale.getLoc(), newType, scale);
+    };
+
+    auto newScaleA = getScaleOperand(dotOp.getAScale(), 0);
+    auto newScaleB = getScaleOperand(dotOp.getBScale(), 1);
 
     auto newDotOp = rewriter.create<triton::DotScaledOp>(
-        loc, newRetType, newA, newB, newAcc, dotOp.getAScale(),
-        dotOp.getBScale(),
+        loc, newRetType, newA, newB, newAcc, newScaleA, newScaleB,
         dotOp.getAElemType(), dotOp.getBElemType(), dotOp.getFastMath(),
         dotOp.getLhsKPack(), dotOp.getRhsKPack());
     rewriter.replaceOpWithNewOp<ConvertLayoutOp>(dotOp, oldRetType,
@@ -944,7 +1004,7 @@ public:
 
     patterns.add<BlockedToMMA>(context, computeCapability, benefitDefault);
     patterns.add<ScaledBlockedToMMA>(context, computeCapability, benefitSM120);
-    populateDecomposeScaledBlockedPatterns(patterns, benefitDefault);
+    // populateDecomposeScaledBlockedPatterns(patterns, benefitDefault);
     patterns.add<BlockedToMMAv5, ScaledBlockedToMMAv5>(
         context, computeCapability, benefitSM120);
     if (applyPatternsGreedily(m, std::move(patterns)).failed()) {

@@ -678,10 +678,10 @@ static void callMmaScaled(PTXBuilder &builder, int b, int m, int n, int k,
   unsigned rowIdx = static_cast<unsigned>(m);
   unsigned byteIdA = rowIdx & 3u;                                    // 0-3
   unsigned threadIdA = (rowIdx >> 2) & 1u;                           // 0-1
-  unsigned regIdxA = rowIdx >> 3; // 8 rows / reg (4*2)
+  unsigned regIdxA = rowIdx >> 4; // 8 rows / reg (4*2)
   unsigned scaleRegA =
       std::min(regIdxA, static_cast<unsigned>(aScale.size() - 1));
-  appendScale(aScale, scaleRegA, byteIdA, threadIdA);
+  appendScale(aScale, 0, 0, 0);
 
   unsigned colIdx = static_cast<unsigned>(4 * n);
   unsigned byteIdB = colIdx & 3u;                 // 0-3
@@ -689,7 +689,7 @@ static void callMmaScaled(PTXBuilder &builder, int b, int m, int n, int k,
   unsigned regIdxB = colIdx >> 4;                 // 16 cols / reg (4*4)
   unsigned scaleRegB =
       std::min(regIdxB, static_cast<unsigned>(bScale.size() - 1));
-  appendScale(bScale, scaleRegB, byteIdB, threadIdB);
+  appendScale(bScale, 0, 0, 0);
 
   mma(ops);
 }

@@ -213,7 +213,7 @@ private:
 
     // For some weird reason, we take the scale with shape as if it were coming
     // from the lhs even when it's the rhs. In a normal world, we should accept
-    // this parametre transposed, as we do with the mxfp.
+    // this parameter transposed, as we do with the mxfp.
     if (opIdx == 1) {
       auto order = getTransposeOrder(rank);
       scale = rewriter.create<TransOp>(loc, scale, order);
@@ -247,7 +247,7 @@ namespace mlir::triton::gpu {
 
 void populateDecomposeScaledBlockedPatterns(RewritePatternSet &patterns,
                                             int benefit) {
-  patterns.add<DecomposeScaledBlocked>(patterns.getContext(), benefit);
+  // patterns.add<DecomposeScaledBlocked>(patterns.getContext(), benefit);
 }
 
 } // namespace mlir::triton::gpu
