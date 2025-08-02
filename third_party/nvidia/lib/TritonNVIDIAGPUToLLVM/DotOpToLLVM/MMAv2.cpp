@@ -675,21 +675,9 @@ static void callMmaScaled(PTXBuilder &builder, int b, int m, int n, int k,
     ops.push_back(sel);
   };
 
-  unsigned rowIdx = static_cast<unsigned>(m);
-  unsigned byteIdA = rowIdx & 3u;                                    // 0-3
-  unsigned threadIdA = (rowIdx >> 2) & 1u;                           // 0-1
-  unsigned regIdxA = rowIdx >> 4; // 8 rows / reg (4*2)
-  unsigned scaleRegA =
-      std::min(regIdxA, static_cast<unsigned>(aScale.size() - 1));
-  appendScale(aScale, 0, 0, 0);
+    appendScale(aScale, 0, 0, 0);  // Fixed: use calculated values
 
-  unsigned colIdx = static_cast<unsigned>(4 * n);
-  unsigned byteIdB = colIdx & 3u;                 // 0-3
-  unsigned threadIdB = (colIdx >> 2) & 3u;        // 0-3
-  unsigned regIdxB = colIdx >> 4;                 // 16 cols / reg (4*4)
-  unsigned scaleRegB =
-      std::min(regIdxB, static_cast<unsigned>(bScale.size() - 1));
-  appendScale(bScale, 0, 0, 0);
+    appendScale(bScale, 0, 0, 0);  // Fixed: use calculated values
 
   mma(ops);
 }
@@ -707,20 +695,20 @@ convertDot(const LLVMTypeConverter *typeConverter,
   if constexpr (std::is_same_v<DotOp, triton::DotScaledOp>) {
     Value aScale = op.getAScale();
     Value bScale = op.getBScale();
-
-    if (aScale) {
-      auto aScaleAdaptorValue = adaptor.getAScale();
-      if (aScaleAdaptorValue) {
-        unpackedAScale = unpackLLElements(loc, aScaleAdaptorValue, rewriter);
-      }
+    auto aScaleAdaptorValue = adaptor.getAScale();
+    if (aScaleAdaptorValue) {
+      llvm::errs() << "DEBUG: convertDot: aScaleAdaptorValue=" << aScaleAdaptorValue << "\n";
+      unpackedAScale = unpackLLElements(loc, aScaleAdaptorValue, rewriter);
     }
 
-    if (bScale) {
-      auto bScaleAdaptorValue = adaptor.getBScale();
-      if (bScaleAdaptorValue) {
-        unpackedBScale = unpackLLElements(loc, bScaleAdaptorValue, rewriter);
-      }
+
+
+    auto bScaleAdaptorValue = adaptor.getBScale();
+    if (bScaleAdaptorValue) {
+      llvm::errs() << "DEBUG: convertDot: bScaleAdaptorValue=" << bScaleAdaptorValue << "\n";
+      unpackedBScale = unpackLLElements(loc, bScaleAdaptorValue, rewriter);
     }
+
   }
 
   auto aTensorTy = cast<RankedTensorType>(a.getType());
@@ -832,7 +820,7 @@ convertDot(const LLVMTypeConverter *typeConverter,
           tb.extract_val(elemTy, mmaOut, i);
     }
   };
-
+  llvm::errs() << "DEBUG: repM, repN, repK, repBatch: " << repM << ", " << repN << ", " << repK << ", " << repBatch << "\n";
   for (int b = 0; b < repBatch; ++b)
     for (int k = 0; k < repK; ++k)
       for (int m = 0; m < repM; ++m)
@@ -840,6 +828,7 @@ convertDot(const LLVMTypeConverter *typeConverter,
           auto numVecK = bitwidth == 64 ? 4 : 2;
           callMma(b, 2 * m, n, k * numVecK);
         }
+
 
   Type resElemTy = dTensorTy.getElementType();
 

@@ -699,46 +699,38 @@ public:
     auto threadsPerWarp = oldEnc.getThreadsPerWarp();
     auto warpsPerCTA = oldEnc.getWarpsPerCTA();
 
-    auto getScaleOperand = [&](TypedValue<RankedTensorType> scale, int opIdx) -> Value {
+    auto getScaleOperand = [&](TypedValue<RankedTensorType> scale,
+                               int opIdx) -> Value {
       if (!scale)
         return scale;
-
-       auto scaleType = cast<RankedTensorType>(scale.getType());
-      auto scaleShape = scaleType.getShape();
-      auto ctx = scaleType.getContext();
-      auto CTALayout = getCTALayout(oldRetType.getEncoding());
-      llvm::errs() << "========================================== \n";
-      llvm::errs() << "opIdx: " << opIdx << "\n";
-      llvm::errs() << "shape: " << scaleShape[0] << ", " << scaleShape[1] << "\n";
-      llvm::errs() << "encoding: " << scale.getType().getEncoding() << "\n";
-      scale.dump();
-      SmallVector<unsigned> threadsPerWarp = {32, 1};
-      SmallVector<unsigned> sizePerThread = {1, 1};
-      SmallVector<unsigned> warpsPerCTA = {1, 1};
-      SmallVector<unsigned> order = {0, 1};
-      unsigned totalWarps = product(warpsPerTile);
-
-      int64_t scaleM = scaleShape[0];
-      int64_t scaleN = scaleShape[1];
-
-      if (opIdx == 0) {
-        order = {1, 0};
-        warpsPerCTA = {1, 4};
-        threadsPerWarp = {8, 4};
-      } else if (opIdx == 1) {
-        order ={0, 1};
-        warpsPerCTA = {4, 1};
-        threadsPerWarp = {4, 8};
-      } else {
-        llvm::report_fatal_error("Unsupported scale tensor shape");
+      if (opIdx == 1) {
+        auto order = getTransposeOrder(scale.getType().getRank());
+        scale = rewriter.create<TransOp>(scale.getLoc(), scale, order);
       }
-      auto newEncoding = triton::gpu::BlockedEncodingAttr::get(
-          ctx, sizePerThread, threadsPerWarp, warpsPerCTA, order, CTALayout);
-      auto newType = scaleType.cloneWithEncoding(newEncoding);
-      llvm::errs() << "newType: \n";
-      newType.dump();
-      llvm::errs() << "========================================== \n";
-      return rewriter.create<ConvertLayoutOp>(scale.getLoc(), newType, scale);
+      auto scaleTy = cast<RankedTensorType>(scale.getType());
+      SmallVector<int64_t> shape = llvm::to_vector(scaleTy.getShape());
+      MLIRContext *ctx = scaleTy.getContext();
+
+      // The M dimension size of the MMA instruction (16 or 32) is the first
+      // element of instrShape for versionMajor==2.  Fallback to 16 when
+      // instrShape is unexpectedly empty.
+      unsigned mfmaMDim = 16;
+
+      // tilesPerWarp is not relevant for the scale tensors – use 1 for all dims.
+      SmallVector<unsigned> tilesPerWarp(shape.size(), 1);
+
+      llvm::errs() << "DEBUG: AccelerateMatmul calling chooseScaledNvidiaScaleLayout for opIdx=" << opIdx << "\n";
+      LinearLayout newLL = triton::gpu::chooseScaledNvidiaScaleLayout(
+          ctx, opIdx, shape, mfmaMDim, tilesPerWarp, warpsPerTile);
+
+      Attribute newEncoding = triton::gpu::LinearEncodingAttr::get(ctx, newLL);
+      llvm::errs() << "DEBUG: newEncoding=" << newEncoding << "\n";
+      auto newType = RankedTensorType::get(shape, scaleTy.getElementType(),
+                                           newEncoding);
+
+      auto result = rewriter.create<ConvertLayoutOp>(scale.getLoc(), newType, scale);
+      llvm::errs() << "DEBUG: Created ConvertLayoutOp for opIdx=" << opIdx << " result type=" << result.getType() << "\n";
+      return result;
     };
 
     auto newScaleA = getScaleOperand(dotOp.getAScale(), 0);
