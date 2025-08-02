@@ -643,6 +643,21 @@ public:
   mlir::LogicalResult
   matchAndRewrite(triton::DotScaledOp dotOp,
                   mlir::PatternRewriter &rewriter) const override {
+    // 강화된 가드: 이미 스케일이 LinearEncodingAttr이면 스킵
+    auto aScale = dotOp.getAScale();
+    auto bScale = dotOp.getBScale();
+
+    if (aScale && isa<triton::gpu::LinearEncodingAttr>(
+        cast<RankedTensorType>(aScale.getType()).getEncoding())) {
+      llvm::errs() << "DEBUG: DotScaledOp already has LinearEncodingAttr aScale, skipping entire pass\n";
+      return failure();
+    }
+    if (bScale && isa<triton::gpu::LinearEncodingAttr>(
+        cast<RankedTensorType>(bScale.getType()).getEncoding())) {
+      llvm::errs() << "DEBUG: DotScaledOp already has LinearEncodingAttr bScale, skipping entire pass\n";
+      return failure();
+    }
+
     llvm::errs() <<"이 패스 거치긴 한데?\n";
     if (!dotOp.getType().getEncoding() ||
         mlir::isa<NvidiaMmaEncodingAttr>(dotOp.getType().getEncoding())) {
@@ -699,17 +714,24 @@ public:
     auto threadsPerWarp = oldEnc.getThreadsPerWarp();
     auto warpsPerCTA = oldEnc.getWarpsPerCTA();
 
-    auto getScaleOperand = [&](TypedValue<RankedTensorType> scale,
-                               int opIdx) -> Value {
-      if (!scale)
-        return scale;
-      if (opIdx == 1) {
-        auto order = getTransposeOrder(scale.getType().getRank());
-        scale = rewriter.create<TransOp>(scale.getLoc(), scale, order);
-      }
-      auto scaleTy = cast<RankedTensorType>(scale.getType());
-      SmallVector<int64_t> shape = llvm::to_vector(scaleTy.getShape());
-      MLIRContext *ctx = scaleTy.getContext();
+          auto getScaleOperand = [&](TypedValue<RankedTensorType> scale,
+                                 int opIdx) -> Value {
+        if (!scale)
+          return scale;
+
+        // Guard: skip if already LinearEncodingAttr
+        auto scaleTy = cast<RankedTensorType>(scale.getType());
+        if (isa<triton::gpu::LinearEncodingAttr>(scaleTy.getEncoding())) {
+          llvm::errs() << "DEBUG: Scale opIdx=" << opIdx << " already has LinearEncodingAttr, skipping\n";
+          return scale;
+        }
+        if (opIdx == 1) {
+          auto order = getTransposeOrder(scale.getType().getRank());
+          scale = rewriter.create<TransOp>(scale.getLoc(), scale, order);
+          scaleTy = cast<RankedTensorType>(scale.getType()); // update after transpose
+        }
+        SmallVector<int64_t> shape = llvm::to_vector(scaleTy.getShape());
+        MLIRContext *ctx = scaleTy.getContext();
 
       // The M dimension size of the MMA instruction (16 or 32) is the first
       // element of instrShape for versionMajor==2.  Fallback to 16 when
@@ -722,7 +744,6 @@ public:
       llvm::errs() << "DEBUG: AccelerateMatmul calling chooseScaledNvidiaScaleLayout for opIdx=" << opIdx << "\n";
       LinearLayout newLL = triton::gpu::chooseScaledNvidiaScaleLayout(
           ctx, opIdx, shape, mfmaMDim, tilesPerWarp, warpsPerTile);
-
       Attribute newEncoding = triton::gpu::LinearEncodingAttr::get(ctx, newLL);
       llvm::errs() << "DEBUG: newEncoding=" << newEncoding << "\n";
       auto newType = RankedTensorType::get(shape, scaleTy.getElementType(),

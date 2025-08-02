@@ -86,7 +86,7 @@ LinearLayout makeCgaLayout(CTALayoutAttr layout) {
 LinearLayout combineCtaCgaWithShape(LinearLayout ctaLayout,
                                     CTALayoutAttr cgaLayoutAttr,
                                     ArrayRef<int64_t> shape) {
-  int rank = shape.size();
+                                      int rank = shape.size();
   assert(ctaLayout.getNumOutDims() == rank);
   assert(cgaLayoutAttr.getCTAOrder().size() == rank);
   MLIRContext *ctx = cgaLayoutAttr.getContext();
@@ -97,11 +97,9 @@ LinearLayout combineCtaCgaWithShape(LinearLayout ctaLayout,
   for (auto [dim, size] : llvm::zip(outDimNames, shape)) {
     labeledShape[dim] = size;
   }
-
   LinearLayout cgaLayout =
-      ensureLayoutNotLargerThan(makeCgaLayout(cgaLayoutAttr), labeledShape)
-          .transposeOuts(llvm::to_vector(ctaLayout.getOutDimNames()));
-
+  ensureLayoutNotLargerThan(makeCgaLayout(cgaLayoutAttr), labeledShape)
+  .transposeOuts(llvm::to_vector(ctaLayout.getOutDimNames()));
   // Calculate the shape of the ctaLayout, which is `shape` divided by the
   // cgaLayout's size.
   llvm::SmallDenseMap<StringAttr, int64_t> ctaShape;
@@ -111,7 +109,6 @@ LinearLayout combineCtaCgaWithShape(LinearLayout ctaLayout,
     ctaShape[dim] =
         std::max(int64_t{1}, labeledShape[dim] / cgaLayout.getOutDimSize(dim));
   }
-
   ctaLayout = ensureLayoutNotSmallerThan(ctaLayout, ctaShape);
   ctaLayout = ensureLayoutNotLargerThan(ctaLayout, ctaShape);
 
@@ -1665,11 +1662,11 @@ LinearLayout chooseScaledNvidiaScaleLayout(MLIRContext *ctx, int dotOperandIdx,
                           {outDimNames[order[0]], outDimNames[order[1]]});
 
   SmallVector<unsigned> warpsPerCTANew = (dotOperandIdx == 0)
-                                        ? SmallVector<unsigned>{1, 4}  // aScale test
-                                        : SmallVector<unsigned>{1, 4}; // bScale test
+                                        ? SmallVector<unsigned>{4, 1}  // aScale test
+                                        : SmallVector<unsigned>{4, 1}; // bScale test
 
   SmallVector<unsigned> warpOrder = (dotOperandIdx == 0)
-                                        ? SmallVector<unsigned>{0, 1}  // aScale test
+                                        ? SmallVector<unsigned>{1, 0}  // aScale test
                                         : SmallVector<unsigned>{1, 0}; // bScale test
 
   LinearLayout warpLayout =
