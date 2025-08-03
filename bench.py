@@ -8,7 +8,7 @@ import argparse, torch, triton, triton.language as tl
 # ─ compile-time tile sizes ───────────────────────────────────────────
 BLOCK_M = 16
 BLOCK_N = 8
-BLOCK_K = 32          # m16 n8 k32 → dot_scaled 기본 판넬
+BLOCK_K = 32
 
 def scaleDot_ref(A, B, sA, sB):
     def fp8e8m0_to_float32(scale):
@@ -40,11 +40,12 @@ def dot_kernel(A_ptr, B_ptr, C_ptr,
         offs_k = k0 + tl.arange(0, BLOCK_K)             # [32]
 
         A = tl.load(A_ptr + offs_m[:, None]*stride_am +
-                              offs_k[None, :]*stride_ak)        # 16×32
+                              offs_k[None, :]*stride_ak)
         B = tl.load(B_ptr + offs_k[:, None]*stride_bk +
-                              offs_n[None, :]*stride_bn)        # 32×8  (잘못)
+                              offs_n[None, :]*stride_bn)
+        # acc = tl.dot(A, B, acc)
         _sA = tl.load(sA_ptr + offs_m)[:,None]
-        _sB = tl.load(sB_ptr + offs_n)[None, :]
+        _sB = tl.load(sB_ptr + offs_n)[:, None]
         acc = tl.dot_scaled(A, _sA, "e4m3",
                             B, _sB, "e4m3",
                             acc)
@@ -56,26 +57,12 @@ def bench(M, N, K, atype="e4m3fn", btype="e4m3fn"):
 
     dtype = torch.float8_e4m3fn
     A = torch.ones(M, K, device="cuda", dtype=dtype)
-    B = torch.ones(N, K, device="cuda", dtype=dtype).t()
-    C = torch.empty(M, N, device="cuda", dtype=torch.float32)
-    if False:
-        sA = torch.full((M,), 130, dtype=torch.uint8, device="cuda")
-        sB = torch.full((N,), 127, dtype=torch.uint8, device="cuda")
-    else:
-                                # DEBUG: Check which warp each element comes from
-        # Set different values for different warps to see the pattern
-        # sA = torch.tensor([100, 101, 102, 103,   # Warp 0 should read these
-                        #   110, 111, 112, 113,   # Warp 1 should read these
-                        #   120, 121, 122, 123,   # Warp 2 should read these
-                        #   130, 131, 132, 133], dtype=torch.uint8, device="cuda")  # Warp 3 should read these
-        # TEST aScale: bScale=127(1.0), aScale varies per row
-        sB = 127 + torch.arange(N, dtype=torch.uint8, device="cuda").flip(0)
-        sA = 126 + torch.arange(M, dtype=torch.uint8, device="cuda")   # [126,127,128,129,...] = [0.5,1,2,4,...]
-        print("Expected: rows should vary if aScale works, all same if aScale broken")
-        # sB = torch.full((N,), 127, dtype=torch.uint8, device="cuda")
+    B = torch.ones(K, N, device="cuda", dtype=dtype)
+    C = torch.zeros(M, N, device="cuda", dtype=torch.float32)
+    sB = (127 + torch.arange(N, dtype=torch.uint8, device="cuda")).flip(0)
+    sA = 126 + torch.arange(M, dtype=torch.uint8, device="cuda")
 
     grid = (M // BLOCK_M, N // BLOCK_N)
-    print("\n=== Running main kernel ===")
     compiled = dot_kernel[grid](
         A, B, C, M, N, K,
         sA, sB,
@@ -87,37 +74,13 @@ def bench(M, N, K, atype="e4m3fn", btype="e4m3fn"):
     C1 = scaleDot_ref(A, B, sA, sB)
     print("Fix: ", C[:16, :4].to(torch.int32))
     print("Ref: ", C1[:16, :4].to(torch.int32))
-
-    # DEBUG: Analyze the pattern
-    print("\n=== DEBUG ANALYSIS ===")
-    print("Expected pattern (each row should use different aScale):")
-    for i in range(min(16, M)):
-        expected_scale = sA[i].item()
-        expected_fp8_val = 2.0 ** (expected_scale - 127.0)
-        expected_result = int(1.0 * expected_fp8_val * 1.0 * K)  # A=1, B=1, K=32
-        print(f"Row {i:2d}: sA[{i}]={expected_scale} → scale={expected_fp8_val:.6f} → result={expected_result}")
-
-    print("\nActual results (Fix):")
-    fix_results = C[:16, 0].to(torch.int32)
-    for i in range(16):
-        print(f"Row {i:2d}: {fix_results[i].item()}")
-
-    print("\nPattern analysis:")
-    # Check if results repeat every 4 rows
-    for i in range(4):
-        row_values = [fix_results[j].item() for j in range(i, 16, 4)]
-        print(f"Every 4th row starting from {i}: {row_values}")
-        if len(set(row_values)) == 1:
-            print(f"  → All same: {row_values[0]} (PROBLEM!)")
-        else:
-            print(f"  → Different values (GOOD!)")
-    # print("=== ttir ===")
-    print(compiled.asm["ptx"])
+    # print(compiled.asm["ptx"])
 
 if __name__ == "__main__":
     pa = argparse.ArgumentParser()
     m = 16
     n = 8
     k = 32
+    print("M, N, K: ", m, n, k)
     args = pa.parse_args()
     bench(m, n, k)

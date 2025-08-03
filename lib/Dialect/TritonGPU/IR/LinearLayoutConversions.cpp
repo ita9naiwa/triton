@@ -86,7 +86,7 @@ LinearLayout makeCgaLayout(CTALayoutAttr layout) {
 LinearLayout combineCtaCgaWithShape(LinearLayout ctaLayout,
                                     CTALayoutAttr cgaLayoutAttr,
                                     ArrayRef<int64_t> shape) {
-                                      int rank = shape.size();
+  int rank = shape.size();
   assert(ctaLayout.getNumOutDims() == rank);
   assert(cgaLayoutAttr.getCTAOrder().size() == rank);
   MLIRContext *ctx = cgaLayoutAttr.getContext();
@@ -98,8 +98,8 @@ LinearLayout combineCtaCgaWithShape(LinearLayout ctaLayout,
     labeledShape[dim] = size;
   }
   LinearLayout cgaLayout =
-  ensureLayoutNotLargerThan(makeCgaLayout(cgaLayoutAttr), labeledShape)
-  .transposeOuts(llvm::to_vector(ctaLayout.getOutDimNames()));
+      ensureLayoutNotLargerThan(makeCgaLayout(cgaLayoutAttr), labeledShape)
+          .transposeOuts(llvm::to_vector(ctaLayout.getOutDimNames()));
   // Calculate the shape of the ctaLayout, which is `shape` divided by the
   // cgaLayout's size.
   llvm::SmallDenseMap<StringAttr, int64_t> ctaShape;
@@ -1587,10 +1587,10 @@ LinearLayout chooseDsReadB64TrLayout(Attribute enc, ArrayRef<int64_t> shape,
 }
 
 LinearLayout chooseScaledNvidiaScaleLayout(MLIRContext *ctx, int dotOperandIdx,
-                                            ArrayRef<int64_t> dotOperandShape,
-                                            unsigned mfmaMDim,
-                                            ArrayRef<unsigned> tilesPerWarp,
-                                            ArrayRef<unsigned> warpsPerCTA) {
+                                           ArrayRef<int64_t> dotOperandShape,
+                                           unsigned mfmaMDim,
+                                           ArrayRef<unsigned> tilesPerWarp,
+                                           ArrayRef<unsigned> warpsPerCTA) {
   using basisT = std::vector<std::vector<int32_t>>;
   unsigned rank = dotOperandShape.size();
   auto order = mlir::triton::gpu::getMatrixOrder(rank, /*rowMajor=*/true);
@@ -1600,7 +1600,8 @@ LinearLayout chooseScaledNvidiaScaleLayout(MLIRContext *ctx, int dotOperandIdx,
   llvm::errs() << "DEBUG: rank=" << rank << ", order=[";
   for (unsigned i = 0; i < order.size(); ++i) {
     llvm::errs() << order[i];
-    if (i < order.size() - 1) llvm::errs() << ",";
+    if (i < order.size() - 1)
+      llvm::errs() << ",";
   }
   llvm::errs() << "]\n";
   StringAttr kRegister = StringAttr::get(ctx, "register");
@@ -1608,69 +1609,54 @@ LinearLayout chooseScaledNvidiaScaleLayout(MLIRContext *ctx, int dotOperandIdx,
   StringAttr kWarp = StringAttr::get(ctx, "warp");
   StringAttr kBlock = StringAttr::get(ctx, "block");
 
-  // Fetch the tilesPerWarp value in the M dimension for operand A, or in the N
-  // dimension for operand B.
   unsigned mnDim = dotOperandIdx == 0 ? rank - 2 : rank - 1;
   unsigned tilePerWarpMN = tilesPerWarp[mnDim];
 
-  // NVIDIA GPU scaled dot layout for aScale/bScale tensors
-  // aScale: [M, K/32], bScale: [N, K/32] (after transpose)
-  // Thread layout: {4 x 8} = 32 lanes
-  // Lane mapping: laneId = n_thread * 4 + m_thread
   int32_t kSize = dotOperandShape[1];
 
-  std::vector<std::vector<int32_t>> registerBase;
-  std::vector<std::vector<int32_t>> laneBase;
-
-  // NVIDIA GPU: 32 lanes with thread layout {4 x 8}
-  // Need 5-bit basis for 32 lanes (2^5 = 32)
-  // DEBUG: Print which layout we're creating
-    llvm::errs() << "DEBUG: chooseScaledNvidiaScaleLayout called with dotOperandIdx="
-               << dotOperandIdx << ", shape=[" << dotOperandShape[0]
-               << "," << dotOperandShape[1] << "], kSize=" << kSize
-               << ", tilePerWarpMN=" << tilePerWarpMN
-               << ", warpsPerCTA=[" << warpsPerCTA[0] << "," << warpsPerCTA[1] << "]\n";
-                                                                                                if (dotOperandIdx == 0) {
-    // FIX: rowIdx = lane / 2
-    // lane의 bit0은 무시하고, bit1부터 rowIdx 계산에 사용
-    registerBase = {}; // Empty - force pure lane-based addressing
-    laneBase = {{0, 0},  // bit0 → 무시 (lane의 최하위 비트)
-                {0, 1},  // bit1 → +1 on M dim (lane/2의 bit0)
-                {0, 2},  // bit2 → +2 on M dim (lane/2의 bit1)
-                {0, 4},  // bit3 → +4 on M dim (lane/2의 bit2)
-                {0, 8}}; // bit4 → +8 on M dim (lane/2의 bit3)
+  std::vector<std::vector<int32_t>> registerBase = {};
+  std::vector<std::vector<int32_t>> laneBase = {};
+  llvm::errs()
+      << "DEBUG: chooseScaledNvidiaScaleLayout called with dotOperandIdx="
+      << dotOperandIdx << ", shape=[" << dotOperandShape[0] << ","
+      << dotOperandShape[1] << "], kSize=" << kSize
+      << ", tilePerWarpMN=" << tilePerWarpMN << ", warpsPerCTA=["
+      << warpsPerCTA[0] << "," << warpsPerCTA[1] << "]\n";
+  if (dotOperandIdx == 0) {
+    laneBase = {
+      {0, 0},
+      {0, 0},
+      {0, 1},
+      {0, 2},
+      {0, 4}};
   } else {
-    // bScale [8,1] after transpose → [1,8]: WORKING CORRECTLY!
-    // Keep this exact pattern that generates bfe.u32 %r44, %r32, 2, 3
-    registerBase = {}; // Empty - pure lane-based addressing
-    laneBase = {{0, 0},  // bit0 → ignored (m_thread bit 0)
-                {0, 0},  // bit1 → ignored (m_thread bit 1)
-                {0, 1},  // bit2 → +1 on N dim (n_thread bit 0)
-                {0, 2},  // bit3 → +2 on N dim (n_thread bit 1)
-                {0, 4}}; // bit4 → +4 on N dim (n_thread bit 2)
+     laneBase = {
+        {1, 0},
+        {2, 0},
+        {0, 1},
+        {0, 2},
+        {0, 4}};
   }
-
-  // DEBUG: Print the laneBase we created
-  llvm::errs() << "DEBUG: laneBase for dotOperandIdx=" << dotOperandIdx << ": ";
-  for (auto& basis : laneBase) {
-    llvm::errs() << "[" << basis[0] << "," << basis[1] << "] ";
-  }
-  llvm::errs() << "\n";
 
   SmallVector<StringAttr> outDimNames = standardOutDimNames(ctx, rank);
   LinearLayout tileLayout({{kRegister, registerBase}, {kLane, laneBase}},
                           {outDimNames[order[0]], outDimNames[order[1]]});
 
-  SmallVector<unsigned> warpsPerCTANew = (dotOperandIdx == 0)
-                                        ? SmallVector<unsigned>{4, 1}  // aScale test
-                                        : SmallVector<unsigned>{4, 1}; // bScale test
+    std::vector<std::vector<int32_t>> warpBase;
+    if (dotOperandIdx == 0) {
+    warpBase = {
+      {0, 0},  // warp=1 -> +1 on M dim (dim0)
+      {0, 0}   // warp=2 -> +2 on M dim (dim0)
+    };
+  } else {
+    warpBase = {
+      {0, 0},
+      {0, 0}
+    };
+  }
 
-  SmallVector<unsigned> warpOrder = (dotOperandIdx == 0)
-                                        ? SmallVector<unsigned>{1, 0}  // aScale test
-                                        : SmallVector<unsigned>{1, 0}; // bScale test
+  LinearLayout warpLayout({{kWarp, warpBase}}, {outDimNames[order[0]], outDimNames[order[1]]});
 
-  LinearLayout warpLayout =
-      identityStandardND(kWarp, warpsPerCTANew, warpOrder);
   llvm::errs() << "warpLayout=" << warpLayout << "\n";
   LinearLayout ctaLayout = tileLayout.transposeOuts(outDimNames) *
                            warpLayout.transposeOuts(outDimNames);
@@ -1680,8 +1666,8 @@ LinearLayout chooseScaledNvidiaScaleLayout(MLIRContext *ctx, int dotOperandIdx,
 
   auto finalLay = combineCtaCgaWithShape(ctaLayout, ctaLay, dotOperandShape);
   llvm::errs() << "DEBUG: finalLay=" << finalLay << "\n";
-  llvm::errs() << "DEBUG: Final LinearLayout for dotOperandIdx=" << dotOperandIdx
-               << " created successfully\n";
+  llvm::errs() << "DEBUG: Final LinearLayout for dotOperandIdx="
+               << dotOperandIdx << " created successfully\n";
   return finalLay;
 }
 

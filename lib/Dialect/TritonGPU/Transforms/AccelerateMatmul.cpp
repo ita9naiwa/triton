@@ -725,11 +725,11 @@ public:
           llvm::errs() << "DEBUG: Scale opIdx=" << opIdx << " already has LinearEncodingAttr, skipping\n";
           return scale;
         }
-        if (opIdx == 1) {
-          auto order = getTransposeOrder(scale.getType().getRank());
-          scale = rewriter.create<TransOp>(scale.getLoc(), scale, order);
-          scaleTy = cast<RankedTensorType>(scale.getType()); // update after transpose
-        }
+        // if (opIdx == 1) {
+        //   auto order = getTransposeOrder(scale.getType().getRank());
+        //   scale = rewriter.create<TransOp>(scale.getLoc(), scale, order);
+        //   scaleTy = cast<RankedTensorType>(scale.getType()); // update after transpose
+        // }
         SmallVector<int64_t> shape = llvm::to_vector(scaleTy.getShape());
         MLIRContext *ctx = scaleTy.getContext();
 
