@@ -1616,6 +1616,7 @@ LinearLayout chooseScaledNvidiaScaleLayout(MLIRContext *ctx, int dotOperandIdx,
 
   std::vector<std::vector<int32_t>> registerBase = {};
   std::vector<std::vector<int32_t>> laneBase = {};
+  std::vector<std::vector<int32_t>> warpBase = {};
   llvm::errs()
       << "DEBUG: chooseScaledNvidiaScaleLayout called with dotOperandIdx="
       << dotOperandIdx << ", shape=[" << dotOperandShape[0] << ","
@@ -1623,47 +1624,55 @@ LinearLayout chooseScaledNvidiaScaleLayout(MLIRContext *ctx, int dotOperandIdx,
       << ", tilePerWarpMN=" << tilePerWarpMN << ", warpsPerCTA=["
       << warpsPerCTA[0] << "," << warpsPerCTA[1] << "]\n";
   if (dotOperandIdx == 0) {
+
+    // laneBase = {
+    //   {0, 0},
+    //   {0, 0},
+    //   {0, 1},
+    //   {0, 2},
+    //   {0, 0}};
+    // warpBase = {
+    //     {0, 0},
+    //     {0, 0}
+    //   };
     laneBase = {
-      {0, 0},
       {0, 0},
       {0, 1},
       {0, 2},
-      {0, 4}};
+      {0, 4},
+      {0, 8}};
+
+    warpBase = {
+        {0, 0},
+        {0, 0}
+      };
   } else {
      laneBase = {
-        {1, 0},
-        {2, 0},
+        {0, 0},
+        {0, 0},
         {0, 1},
         {0, 2},
         {0, 4}};
+
+    warpBase = {
+      {0, 0},
+      {0, 0}
+    };
+
   }
 
   SmallVector<StringAttr> outDimNames = standardOutDimNames(ctx, rank);
   LinearLayout tileLayout({{kRegister, registerBase}, {kLane, laneBase}},
                           {outDimNames[order[0]], outDimNames[order[1]]});
 
-    std::vector<std::vector<int32_t>> warpBase;
-    if (dotOperandIdx == 0) {
-    warpBase = {
-      {0, 0},  // warp=1 -> +1 on M dim (dim0)
-      {0, 0}   // warp=2 -> +2 on M dim (dim0)
-    };
-  } else {
-    warpBase = {
-      {0, 0},
-      {0, 0}
-    };
-  }
-
   LinearLayout warpLayout({{kWarp, warpBase}}, {outDimNames[order[0]], outDimNames[order[1]]});
-
-  llvm::errs() << "warpLayout=" << warpLayout << "\n";
   LinearLayout ctaLayout = tileLayout.transposeOuts(outDimNames) *
-                           warpLayout.transposeOuts(outDimNames);
+                        warpLayout.transposeOuts(outDimNames);
+  llvm::errs() << "warpLayout=" << warpLayout << "\n";
   llvm::errs() << "ctaLayout=" << ctaLayout << "\n";
   auto ctaLay = CTALayoutAttr::get(/*context=*/ctx, /*CTAsPerCGA=*/{1, 1},
                                    /*CTASplitNum=*/{1, 1}, /*CTAOrder=*/{1, 0});
-
+  llvm::errs() << "DEBUG: ctaLay=" << ctaLay << "\n";
   auto finalLay = combineCtaCgaWithShape(ctaLayout, ctaLay, dotOperandShape);
   llvm::errs() << "DEBUG: finalLay=" << finalLay << "\n";
   llvm::errs() << "DEBUG: Final LinearLayout for dotOperandIdx="

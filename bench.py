@@ -59,10 +59,13 @@ def bench(M, N, K, atype="e4m3fn", btype="e4m3fn"):
     A = torch.ones(M, K, device="cuda", dtype=dtype)
     B = torch.ones(K, N, device="cuda", dtype=dtype)
     C = torch.zeros(M, N, device="cuda", dtype=torch.float32)
+    sB = torch.ones(N, device="cuda", dtype=torch.uint8) * 127
+    sA = torch.ones(M, device="cuda", dtype=torch.uint8) * 127
     sB = (127 + torch.arange(N, dtype=torch.uint8, device="cuda")).flip(0)
     sA = 126 + torch.arange(M, dtype=torch.uint8, device="cuda")
 
     grid = (M // BLOCK_M, N // BLOCK_N)
+    print("grid: ", grid)
     compiled = dot_kernel[grid](
         A, B, C, M, N, K,
         sA, sB,
@@ -72,9 +75,9 @@ def bench(M, N, K, atype="e4m3fn", btype="e4m3fn"):
         BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K)
 
     C1 = scaleDot_ref(A, B, sA, sB)
-    print("Fix: ", C[:16, :4].to(torch.int32))
-    print("Ref: ", C1[:16, :4].to(torch.int32))
-    # print(compiled.asm["ptx"])
+    print("Fix: ", C[:16, :8].to(torch.int32))
+    print("Ref: ", C1[:16, :8].to(torch.int32))
+    print(compiled.asm["ptx"])
 
 if __name__ == "__main__":
     pa = argparse.ArgumentParser()
