@@ -280,6 +280,7 @@ enum class TensorCoreType : uint8_t {
   FP32_FP8E4M3FN_FP8E5M2_FP32_SCALE_VEC_1X,
   FP32_FP8E4M3FN_FP8E4M3FN_FP32_SCALE_VEC_1X,
   //
+  FP32_FP4E2M1_FP4E2M1_FP32_SCALE_VEC_2X,
   NOT_APPLICABLE,
 };
 
@@ -323,6 +324,7 @@ static Type getMmaRetType(TensorCoreType mmaType, MLIRContext *ctx) {
   case TensorCoreType::FP32_FP8E5M2_FP8E4M3FN_FP32_SCALE_VEC_1X:
   case TensorCoreType::FP32_FP8E4M3FN_FP8E5M2_FP32_SCALE_VEC_1X:
   case TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_SCALE_VEC_1X:
+  case TensorCoreType::FP32_FP4E2M1_FP4E2M1_FP32_SCALE_VEC_2X:
     return fp32x4Ty;
   default:
     llvm::report_fatal_error("Unsupported mma type found");
@@ -351,7 +353,13 @@ static TensorCoreType getMmaTypeDotScaled(DotScaledOp op, RankedTensorType aTy,
         llvm::isa<Float8E4M3FNType>(bTy.getElementType())) {
       return TensorCoreType::FP32_FP8E4M3FN_FP8E4M3FN_FP32_SCALE_VEC_1X;
     }
+    // Add support for e2m1 x e2m1 with 2X scale
+    if (op.getBElemType() == ScaleDotElemType::E2M1 &&
+        op.getAElemType() == ScaleDotElemType::E2M1) {
+      return TensorCoreType::FP32_FP4E2M1_FP4E2M1_FP32_SCALE_VEC_2X;
+    }
   }
+  // llvm::errs() << "getMmaTypeDotScaled: NOT_APPLICABLE" << "\n";
   return TensorCoreType::NOT_APPLICABLE;
 }
 
@@ -478,6 +486,11 @@ inline static const std::map<TensorCoreType, std::string> mmaInstrPtxScaled = {
      "mma.sync.aligned.m16n8k32.row.col."
      "kind::mxf8f6f4.block_scale.scale_vec::"
      "1X.f32.e4m3.e4m3.f32.ue8m0"},
+    // mxfp4 e2m1 x e2m1 with 2X scale (m16n8k64)
+    {TensorCoreType::FP32_FP4E2M1_FP4E2M1_FP32_SCALE_VEC_2X,
+     "mma.sync.aligned.m16n8k64.row.col."
+     "kind::mxf4nvf4.block_scale.scale_vec::"
+     "2X.f32.e2m1.e2m1.f32.ue8m0"},
 };
 
 static void callMmaTuringInt8(PTXBuilder &builder, int b, int m, int n, int k,
@@ -655,12 +668,15 @@ static void callMmaScaled(PTXBuilder &builder, int b, int m, int n, int k,
     ops.push_back(sel);
   };
 
-  unsigned aByte = (m / 2) & 0x3;
-  unsigned bByte = n & 0x3;
-  // byteId, threadId selection logic for the scale factor
-  // depends on getSM120DotScaledScaleLayout
-  appendScale(aScaleValue, aByte, /*threadId*/ 0);
-  appendScale(bScaleValue, bByte, /*threadId*/ 0);
+  unsigned aByte = ((unsigned(m) >> 1) & 0x1) << 1; // {0,2}
+  unsigned bByte = ((unsigned(n) >> 1) & 0x1) << 1; // {0,2}
+  // llvm::errs() << "M: " << m << ", N: " << n << "AByte: " << aByte << ",
+  // BByte: " << bByte << "\n";
+  unsigned aThreadId = 0;
+  unsigned bThreadId = 0;
+
+  appendScale(aScaleValue, 0, aThreadId);
+  appendScale(bScaleValue, 0, bThreadId);
 
   mma(ops);
 }
@@ -677,6 +693,7 @@ convertMMAImpl(DotOpInterface op, Value llvmA, Value llvmB, Value llvmC,
                ConversionPatternRewriter &rewriter, TensorCoreType mmaType,
                const std::map<TensorCoreType, std::string> &mmaInstructions,
                const EmitMmaCallback &emitMma) {
+
   auto loc = op.getLoc();
   auto aType = cast<RankedTensorType>(op.getA().getType());
   auto bType = cast<RankedTensorType>(op.getB().getType());
@@ -697,7 +714,6 @@ convertMMAImpl(DotOpInterface op, Value llvmA, Value llvmB, Value llvmC,
   auto aShapePerCTA = triton::gpu::getShapePerCTA(aTensorTy);
   auto bShapePerCTA = triton::gpu::getShapePerCTA(bTensorTy);
   auto dShapePerCTA = triton::gpu::getShapePerCTA(dTensorTy);
-
   int bitwidth = aTensorTy.getElementType().getIntOrFloatBitWidth();
   auto dotOpA = cast<DotOperandEncodingAttr>(aTensorTy.getEncoding());
   int kWidth = dotOpA.getKWidth();
@@ -725,6 +741,7 @@ convertMMAImpl(DotOpInterface op, Value llvmA, Value llvmB, Value llvmC,
   assert(dotOpB.getRepOrder() == getOrderForDotOperand(dotOpB.getOpIdx(),
                                                        bShapePerCTA.size(),
                                                        /*kContig=*/true));
+
   auto hb = getValuesFromDotOperandLayoutStruct(
       typeConverter, loc, rewriter, llvmB, repBatch, repN, repK, bTensorTy);
 
@@ -848,7 +865,6 @@ LogicalResult convertMMADotScaled(triton::DotScaledOp op,
   auto aTensorTy = cast<RankedTensorType>(op.getA().getType());
   auto bTensorTy = cast<RankedTensorType>(op.getB().getType());
   auto dTensorTy = cast<RankedTensorType>(op.getD().getType());
-
   TensorCoreType mmaType =
       getMmaTypeDotScaled(op, aTensorTy, bTensorTy, dTensorTy);
 
@@ -896,53 +912,47 @@ LogicalResult convertMMADotScaled(triton::DotScaledOp op,
       return pack4BytesToI32(bytes);
     };
 
-    int chooseK = k / 2;
-    bool interleavedB = (repK > 1);
-    SmallVector<Value> KsliceBuf;
-    auto Kslice = [&](ArrayRef<Value> bytes,
-                      bool interleaved) -> ArrayRef<Value> {
-      int sz = bytes.size();
-      if (repK == 1)
-        return bytes;
-      assert(sz % repK == 0);
-      int chunk = (sz / repK);
-      if (!interleaved) {
-        int beg = chooseK * chunk;
-        return bytes.slice(beg, chunk);
-      } else {
-        KsliceBuf.clear();
-        KsliceBuf.reserve(chunk);
-        const int elementsPerGroup = 2;
-        for (int group = 0; group < chunk / elementsPerGroup; ++group) {
-          for (int elem = 0; elem < elementsPerGroup; ++elem) {
-            int idx = group * elementsPerGroup * repK +
-                      chooseK * elementsPerGroup + elem;
-            if (idx < sz) {
-              KsliceBuf.push_back(bytes[idx]);
-            }
-          }
-        }
-        if (chunk % elementsPerGroup != 0) {
-          for (int nn = (chunk / elementsPerGroup) * elementsPerGroup;
-               nn < chunk; ++nn) {
-            int idx = nn * repK + chooseK;
-            if (idx < sz) {
-              KsliceBuf.push_back(bytes[idx]);
-            }
-          }
-        }
-        return ArrayRef<Value>(KsliceBuf);
-      }
+    auto pack2or4From = [&](ArrayRef<Value> bytes, int startIdx) -> Value {
+      int total = static_cast<int>(bytes.size());
+      int remain = total - startIdx;
+      if (remain >= 4)
+        return pack4BytesToI32(bytes.slice(startIdx, 4));
+      if (remain >= 2)
+        return pack4BytesToI32(bytes.slice(startIdx, 2));
+      // Fallback: pack whatever remains (possibly 0 or 1)
+      return pack4BytesToI32(bytes.slice(startIdx, remain > 0 ? remain : 0));
     };
-    Value aScaleValue =
-        pack4ByGroupedIndex(Kslice(unpackedAScale, false), m, 8);
-    Value bScaleValue =
-        pack4ByGroupedIndex(Kslice(unpackedBScale, interleavedB), n, 4);
+
+    // Split bytes into kRep equal chunks and return the i-th chunk
+    auto getKRepChunk = [&](ArrayRef<Value> bytes, int kRep,
+                            int chunkIdx) -> ArrayRef<Value> {
+      if (kRep <= 0)
+        return bytes;
+      int total = static_cast<int>(bytes.size());
+      int base = total / kRep;
+      int rem = total % kRep;
+      int extra = (chunkIdx < rem) ? chunkIdx : rem;
+      int start = chunkIdx * base + extra;
+      int len = base + ((chunkIdx < rem) ? 1 : 0);
+      if (start >= total)
+        return bytes.slice(total, 0);
+      if (len > total - start)
+        len = total - start;
+      if (len < 0)
+        len = 0;
+      return bytes.slice(start, len);
+    };
+
+    Value aScaleValue;
+    Value bScaleValue;
+    auto aScaleBytes = getKRepChunk(unpackedAScale, repK, k / 2);
+    auto bScaleBytes = getKRepChunk(unpackedBScale, repK, k / 2);
+    aScaleValue = pack2or4From(aScaleBytes, m);
+    bScaleValue = pack2or4From(bScaleBytes, n * 2);
 
     callMmaScaled(builder, b, m, n, k, mma, numMmaRets, colsPerThread, aTable,
                   bTable, cValues, aScaleValue, bScaleValue);
   };
-
   return convertMMAImpl(op, adaptor.getA(), adaptor.getB(), adaptor.getC(),
                         typeConverter, rewriter, mmaType, instrMap, emit);
 }

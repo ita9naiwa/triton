@@ -670,15 +670,6 @@ public:
     if (numCTAs != 1) {
       return failure();
     }
-
-    // TODO: support mxfp4 variants.
-    if (!((dotOp.getAElemType() == ScaleDotElemType::E5M2 ||
-           dotOp.getAElemType() == ScaleDotElemType::E4M3) &&
-          (dotOp.getBElemType() == ScaleDotElemType::E5M2 ||
-           dotOp.getBElemType() == ScaleDotElemType::E4M3))) {
-      return rewriter.notifyMatchFailure(dotOp, "only E5M2/E4M3 is supported");
-    }
-
     // Skip if any scale is missing. This pattern requires both scales.
     if (!dotOp.getAScale() || !dotOp.getBScale())
       return failure();
@@ -750,8 +741,19 @@ public:
       const unsigned instrM = instr[0], instrN = instr[1];
 
       auto blocked = cast<triton::gpu::BlockedEncodingAttr>(ty.getEncoding());
+      // Determine group size based on scale element type:
+      // e2m1(fp4) -> groupSize = 2, otherwise (fp8 etc.) -> 1
+      unsigned groupSize = 1;
+      if (auto dot = dyn_cast<triton::DotScaledOp>(dotOp.getOperation())) {
+        bool isE2M1 =
+            (opIdx == 0)
+                ? (dot.getAElemType() == triton::ScaleDotElemType::E2M1)
+                : (dot.getBElemType() == triton::ScaleDotElemType::E2M1);
+        groupSize = isE2M1 ? 2u : 1u;
+      }
+
       auto ll = triton::gpu::getSM120DotScaledScaleLayout(
-          ctx, opIdx, shape, tilesPerWarp,
+          ctx, opIdx, shape, groupSize, tilesPerWarp,
           /*warpsPerCTA=*/mmaWarps, instrM, instrN, blocked.getCTALayout());
       auto newEnc = triton::gpu::LinearEncodingAttr::get(ctx, ll);
       auto newTy = RankedTensorType::get(shape, ty.getElementType(), newEnc);

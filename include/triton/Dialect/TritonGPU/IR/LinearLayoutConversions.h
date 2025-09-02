@@ -129,6 +129,7 @@ LinearLayout chooseScaledMfmaScaleLayout(MLIRContext *ctx, int dotOperandIdx,
 
 LinearLayout getSM120DotScaledScaleLayout(MLIRContext *ctx, int dotOperandIdx,
                                           ArrayRef<int64_t> dotOperandShape,
+                                          unsigned groupSize,
                                           ArrayRef<unsigned> tilesPerWarp,
                                           ArrayRef<unsigned> warpsPerCTA,
                                           unsigned instrM, unsigned instrN,
