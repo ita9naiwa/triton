@@ -3688,6 +3688,51 @@ TEST_F(LinearLayoutConversionsTest, SM120DotScaledScaleLayout_MultiWarp) {
   EXPECT_EQ(ll, layout);
 }
 
+// Additional tests to exercise groupSize > 1 path (k doubling)
+TEST_F(LinearLayoutConversionsTest,
+       SM120DotScaledScaleLayout_AScale_GroupSize2) {
+  // dotOperandIdx = 0 (A-scale), shape = [128, 64], groupSize = 2
+  // Simple config to isolate K-doubling sequence: tilesPerWarp = [1,1],
+  // warpsPerCTA = [1,1]
+  auto layout = getSM120DotScaledScaleLayout(
+      &ctx, /*dotOperandIdx=*/0, /*dotOperandShape=*/{128, 64},
+      /*groupSize=*/2,
+      /*tilesPerWarp=*/{1, 1}, /*warpsPerCTA=*/{1, 1},
+      /*mmaInstrM=*/16, /*mmaInstrN=*/8,
+      /*ctaLayout=*/CTALayoutAttr::get(&ctx, {1, 1}, {1, 1}, {1, 0}));
+
+  auto ll = LinearLayout(
+      {{S("register"), {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, {32, 0}}},
+       {S("lane"), {{0, 8}, {0, 0}, {0, 1}, {0, 2}, {0, 4}}},
+       {S("warp"), {}},
+       {S("block"), {}}},
+      {S("dim0"), S("dim1")});
+
+  EXPECT_EQ(ll, layout);
+}
+
+TEST_F(LinearLayoutConversionsTest,
+       SM120DotScaledScaleLayout_BScale_GroupSize2) {
+  // dotOperandIdx = 1 (B-scale), shape = [64, 128], groupSize = 2
+  // Simple config to isolate K-doubling sequence: tilesPerWarp = [1,1],
+  // warpsPerCTA = [1,1]
+  auto layout = getSM120DotScaledScaleLayout(
+      &ctx, /*dotOperandIdx=*/1, /*dotOperandShape=*/{64, 128},
+      /*groupSize=*/2,
+      /*tilesPerWarp=*/{1, 1}, /*warpsPerCTA=*/{1, 1},
+      /*mmaInstrM=*/16, /*mmaInstrN=*/8,
+      /*ctaLayout=*/CTALayoutAttr::get(&ctx, {1, 1}, {1, 1}, {1, 0}));
+
+  auto ll = LinearLayout(
+      {{S("register"), {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, {32, 0}}},
+       {S("lane"), {{0, 0}, {0, 0}, {0, 1}, {0, 2}, {0, 4}}},
+       {S("warp"), {}},
+       {S("block"), {}}},
+      {S("dim0"), S("dim1")});
+
+  EXPECT_EQ(ll, layout);
+}
+
 } // anonymous namespace
 } // namespace mlir::triton::gpu
 

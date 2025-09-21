@@ -1445,11 +1445,8 @@ LinearLayout getSM120DotScaledScaleLayout(
   const int totalWarps = mWarps * nWarps;
   const unsigned mRep_warp = tilesPerWarp[mIndex];
   const unsigned nRep_warp = tilesPerWarp[nIndex];
-  // Each scale applies to K / groupSize consecutive elements along the K
-  // dimension. Examples:
-  // - FP8: groupSize = 1, K = 32 => 32 elements per scale
-  // - MXFP4 (int8 scales): groupSize = 2, K = 64 => 32 elements per scale
-  // - NVFP4 (float8 scales): groupSize = 4, K = 64 => 16 elements per scale
+  // Each scale value covers `groupSize` elements along K. For e2m1(fp4),
+  // groupSize = 2 (each scale applies to 2 elements). For fp8, groupSize = 1.
   const unsigned kRep = kSize / groupSize;
   std::vector<std::vector<int32_t>> registerBase;
   std::vector<std::vector<int32_t>> laneBase;
@@ -1462,11 +1459,13 @@ LinearLayout getSM120DotScaledScaleLayout(
       registerBase.push_back({1, 0});
       registerBase.push_back({2, 0});
     }
+
+    // Explicitly encode M tile replication into register basis
     for (int offset = instrM * mWarps; offset < instrM * mWarps * mRep_warp;
          offset <<= 1)
       registerBase.push_back({0, offset});
-    for (int k = 1; k < kRep; k += 1)
-      registerBase.push_back({static_cast<int32_t>(groupSize << (k - 1)), 0});
+    for (int _k = 1, offset = groupSize; _k < kRep; _k *= 2, offset <<= 1)
+      registerBase.push_back({offset, 0});
     for (int w = mWarps; w < totalWarps; w <<= 1)
       warpBase.push_back({0, 0});
     for (int offset = instrM; offset < instrM * mWarps; offset <<= 1)
@@ -1480,11 +1479,13 @@ LinearLayout getSM120DotScaledScaleLayout(
       registerBase.push_back({1, 0});
       registerBase.push_back({2, 0});
     }
+
+    // Explicitly encode N tile replication into register basis
     for (int offset = instrN * nWarps; offset < instrN * nWarps * nRep_warp;
          offset <<= 1)
       registerBase.push_back({0, offset});
-    for (int k = 1; k < kRep; k += 1)
-      registerBase.push_back({static_cast<int32_t>(groupSize << (k - 1)), 0});
+    for (int _k = 1, offset = groupSize; _k < kRep; _k *= 2, offset <<= 1)
+      registerBase.push_back({offset, 0});
 
     for (int offset = instrN; offset < instrN * nWarps; offset <<= 1)
       warpBase.push_back({0, offset});
