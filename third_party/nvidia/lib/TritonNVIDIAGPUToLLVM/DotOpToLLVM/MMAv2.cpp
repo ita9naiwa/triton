@@ -937,23 +937,22 @@ LogicalResult convertMMADotScaled(triton::DotScaledOp op,
     auto bScaleBytes = getKRepChunk(unpackedBScale, repK, k / 2);
 
     // Determine groupSize based on mmaType
-    bool isGroupSize4 = (instrMap.find(mmaType) != instrMap.end() &&
-                         instrMap.at(mmaType).find("4X") != std::string::npos);
     bool isGroupSize1 = (instrMap.find(mmaType) != instrMap.end() &&
                          instrMap.at(mmaType).find("1X") != std::string::npos);
     bool isGroupSize2 = (instrMap.find(mmaType) != instrMap.end() &&
                          instrMap.at(mmaType).find("2X") != std::string::npos);
-    if (isGroupSize4) {
-      aScaleValue = pack2or4From(aScaleBytes, m * 2);
-      bScaleValue = pack2or4From(bScaleBytes, n * 4);
+    bool isGroupSize4 = (instrMap.find(mmaType) != instrMap.end() &&
+                         instrMap.at(mmaType).find("4X") != std::string::npos);
+    if (isGroupSize1) {
+      aScaleValue = pack2or4From(aScaleBytes, m / 2);
+      bScaleValue = pack2or4From(bScaleBytes, n);
     } else if (isGroupSize2) {
       aScaleValue = pack2or4From(aScaleBytes, m);
       bScaleValue = pack2or4From(bScaleBytes, n * 2);
-    } else if (isGroupSize1) {
-      aScaleValue = pack2or4From(aScaleBytes, m / 2);
-      bScaleValue = pack2or4From(bScaleBytes, n);
+    } else if (isGroupSize4) {
+      aScaleValue = pack2or4From(aScaleBytes, m * 2);
+      bScaleValue = pack2or4From(bScaleBytes, n * 4);
     }
-
     callMmaScaled(builder, b, m, n, k, mma, numMmaRets, colsPerThread, aTable,
                   bTable, cValues, aScaleValue, bScaleValue);
   };
