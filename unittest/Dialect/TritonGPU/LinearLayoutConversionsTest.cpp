@@ -3696,12 +3696,20 @@ TEST_F(LinearLayoutConversionsTest,
       /*tilesPerWarp=*/{1, 1}, /*warpsPerCTA=*/{1, 1},
       /*ctaLayout=*/CTALayoutAttr::get(&ctx, {1, 1}, {1, 1}, {1, 0}));
 
-  auto ll = LinearLayout(
-      {{S("register"), {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, {32, 0}}},
-       {S("lane"), {{0, 8}, {0, 0}, {0, 1}, {0, 2}, {0, 4}}},
-       {S("warp"), {}},
-       {S("block"), {}}},
-      {S("dim0"), S("dim1")});
+  auto ll = LinearLayout({{S("register"),
+                           {{0, 1},
+                            {0, 2},
+                            {0, 4},
+                            {0, 8},
+                            {0, 16},
+                            {0, 32},
+                            {16, 0},
+                            {32, 0},
+                            {64, 0}}},
+                          {S("lane"), {{8, 0}, {0, 0}, {1, 0}, {2, 0}, {4, 0}}},
+                          {S("warp"), {}},
+                          {S("block"), {}}},
+                         {S("dim0"), S("dim1")});
 
   EXPECT_EQ(ll, layout);
 }
@@ -3717,12 +3725,51 @@ TEST_F(LinearLayoutConversionsTest,
       /*tilesPerWarp=*/{1, 1}, /*warpsPerCTA=*/{1, 1},
       /*ctaLayout=*/CTALayoutAttr::get(&ctx, {1, 1}, {1, 1}, {1, 0}));
 
-  auto ll = LinearLayout(
-      {{S("register"), {{1, 0}, {2, 0}, {4, 0}, {8, 0}, {16, 0}, {32, 0}}},
-       {S("lane"), {{0, 0}, {0, 0}, {0, 1}, {0, 2}, {0, 4}}},
-       {S("warp"), {}},
-       {S("block"), {}}},
-      {S("dim0"), S("dim1")});
+  auto ll = LinearLayout({{S("register"),
+                           {{0, 1},
+                            {0, 2},
+                            {0, 4},
+                            {0, 8},
+                            {0, 16},
+                            {0, 32},
+                            {0, 64},
+                            {8, 0},
+                            {16, 0},
+                            {32, 0}}},
+                          {S("lane"), {{0, 0}, {0, 0}, {1, 0}, {2, 0}, {4, 0}}},
+                          {S("warp"), {}},
+                          {S("block"), {}}},
+                         {S("dim0"), S("dim1")});
+
+  EXPECT_EQ(ll, layout);
+}
+
+TEST_F(LinearLayoutConversionsTest,
+       SM120DotScaledScaleLayout_BScale_GroupSize4_NVFP4) {
+  // dotOperandIdx = 1 (B-scale), shape = [64, 128], groupSize = 4 (nvfp4)
+  // Simple config to isolate K-doubling sequence: tilesPerWarp = [1,1],
+  // warpsPerCTA = [1,1]
+  auto layout = getSM120DotScaledScaleLayout(
+      &ctx, /*dotOperandIdx=*/1, /*dotOperandShape=*/{64, 128},
+      /*groupSize=*/4,
+      /*tilesPerWarp=*/{1, 1}, /*warpsPerCTA=*/{1, 1},
+      /*ctaLayout=*/CTALayoutAttr::get(&ctx, {1, 1}, {1, 1}, {1, 0}));
+
+  auto ll = LinearLayout({{S("register"),
+                           {{0, 1},
+                            {0, 2},
+                            {0, 4},
+                            {0, 8},
+                            {0, 16},
+                            {0, 32},
+                            {0, 64},
+                            {8, 0},
+                            {16, 0},
+                            {32, 0}}},
+                          {S("lane"), {{0, 0}, {0, 0}, {1, 0}, {2, 0}, {4, 0}}},
+                          {S("warp"), {}},
+                          {S("block"), {}}},
+                         {S("dim0"), S("dim1")});
 
   EXPECT_EQ(ll, layout);
 }
