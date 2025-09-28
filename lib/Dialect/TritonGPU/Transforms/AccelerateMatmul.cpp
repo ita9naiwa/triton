@@ -750,46 +750,34 @@ public:
     };
     SmallVector<unsigned, 2> tilesPerWarp{computeTilePerWarp(newA, 0),
                                           computeTilePerWarp(newB, 1)};
+    auto computeScaleVecSize = [&]() -> unsigned {
+      auto dot = dyn_cast<DotScaledOp>(dotOp.getOperation());
+      if (dot.getAElemType() != dot.getBElemType())
+        return 1;
+      if (dot.getBElemType() != triton::ScaleDotElemType::E2M1)
+        return 1;
+      Type scaleElemType = dot.getAScale().getType().getElementType();
+      if (isa<mlir::Float8E4M3FNType>(scaleElemType))
+        return 4;
+      if (auto intType = dyn_cast<mlir::IntegerType>(scaleElemType);
+          intType && intType.getWidth() == 8)
+        return 2;
+      llvm_unreachable("Unsupported scale element type!");
+    };
+
+    const auto mmaWarps = mmaResult.mmaEnc.getWarpsPerCTA(); // [wM, wN]
+
     // Convert scales to Linear layout
     auto convertScale = [&](Value scale, int opIdx) -> Value {
-      if (!scale)
-        return Value();
       auto ty = cast<RankedTensorType>(scale.getType());
       SmallVector<int64_t> shape = llvm::to_vector(ty.getShape());
       MLIRContext *ctx = ty.getContext();
-      const auto mmaWarps = mmaResult.mmaEnc.getWarpsPerCTA(); // [wM, wN]
-      const auto instr = mmaResult.mmaEnc.getInstrShape(); // [instrM, instrN]
-      const unsigned instrM = instr[0], instrN = instr[1];
-
       auto blocked = cast<triton::gpu::BlockedEncodingAttr>(ty.getEncoding());
-      // Determine group size based on scale element type:
-      // e2m1(fp4) -> groupSize = 2, otherwise (fp8 etc.) -> 1
-      unsigned groupSize = 1;
-      if (auto dot = dyn_cast<triton::DotScaledOp>(dotOp.getOperation())) {
-        bool isE2M1 =
-            (opIdx == 0)
-                ? (dot.getAElemType() == triton::ScaleDotElemType::E2M1)
-                : (dot.getBElemType() == triton::ScaleDotElemType::E2M1);
-        auto scaleElemType = opIdx == 0
-                                 ? dot.getAScale().getType().getElementType()
-                                 : dot.getBScale().getType().getElementType();
-        if (isE2M1) {
-          if (isa<mlir::Float8E4M3FNType>(scaleElemType)) {
-            groupSize = 4;
-          } else if (auto intType = dyn_cast<mlir::IntegerType>(scaleElemType);
-                     intType && intType.getWidth() == 8) {
-            groupSize = 2;
-          } else {
-            llvm_unreachable("unsupported scale element type!");
-          }
-        } else {
-          groupSize = 1;
-        }
-      }
 
+      const unsigned scaleVecMode = computeScaleVecSize();
       auto ll = triton::gpu::getSM120DotScaledScaleLayout(
-          ctx, opIdx, shape, groupSize, tilesPerWarp,
-          /*warpsPerCTA=*/mmaWarps, instrM, instrN, blocked.getCTALayout());
+          ctx, opIdx, shape, scaleVecMode, tilesPerWarp,
+          /*warpsPerCTA=*/mmaWarps, blocked.getCTALayout());
       auto newEnc = triton::gpu::LinearEncodingAttr::get(ctx, ll);
       auto newTy = RankedTensorType::get(shape, ty.getElementType(), newEnc);
       return rewriter.create<ConvertLayoutOp>(scale.getLoc(), newTy, scale);

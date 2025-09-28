@@ -1401,48 +1401,109 @@ LinearLayout chooseDsReadB64TrLayout(Attribute enc, ArrayRef<int64_t> shape,
   return chooseDotDsReadB64TrLayout(dot, shape, elemBitWidth);
 }
 
-// Warp-level block scaling (sm_120, m16n8k32)
-// Reference: NVIDIA PTX ISA "Warp-level block scaling"
-// https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-block-scaling
+// PTX ISA - Warp-level MMA Block Scaling
+// Spec link:
+//   https://docs.nvidia.com/cuda/parallel-thread-execution/#warp-level-block-scaling
+//  (see Sec. 9.7.14.3 in the PTX ISA)
 //
-// Semantics:
-//   D = (A * SF_A) * (B * SF_B) + C
-//   scale_vec::1X  -> SF_A shape Mx1 (per-row),   SF_B shape 1xN (per-col)
+// Block scaling multiplies A and B by per-row/column scale factors before the
+// MMA:
+//   D = (A * scale_A) * (B * scale_B) + C
 //
-// Providers (within each warp quad of 4 lanes):
-//   - A scales are provided by a lane-pair selected by thread-id-a ∈ {0,1}
-//       (0 => lanes {0,1}, 1 => lanes {2,3} in the quad).
-//   - B scales are provided by a single lane selected by thread-id-b ∈
-//   {0,1,2,3}.
+// Terminology
+// - scale_A / scale_B: scale matrices (not scalars).
+// - SF_A / SF_B: the selected scalar element taken from scale_A / scale_B.
+// - scale_vec_size: N in {1X, 2X, 4X}. A row/col is split into N chunks along
+// K,
+//   and each chunk is multiplied by one scale factor (K-chunk size is K / N).
 //
-// Byte selectors (which subfield of the 32-bit metadata is used):
-//   - 1X: 1 byte  => byte-id ∈ {0,1,2,3}
+// Scale matrix shapes by scale_vec_size
+//   1X: scale_A = M x 1, scale_B = 1 x N
+//   2X: scale_A = M x 2, scale_B = 2 x N
+//   4X: scale_A = M x 4, scale_B = 4 x N
 //
-// Implementation notes:
-//   - We support only scale_vec::1X for now.
-//   - We choose a fixed provider for A (thread-id-a = 0) and B (thread-id-b =
-//   0)
-//   - In this implementation, each lane in a quad has the same scale factor.
-LinearLayout
-getSM120DotScaledScaleLayout(MLIRContext *ctx, int dotOperandIdx,
-                             ArrayRef<int64_t> dotOperandShape, unsigned kWidth,
-                             ArrayRef<unsigned> tilesPerWarp,
-                             ArrayRef<unsigned> warpsPerCTA, unsigned mmaInstrM,
-                             unsigned mmaInstrN, CTALayoutAttr ctaLayoutAttr) {
+// Valid .kind x scale_vec_size (supported in this implementation)
+//   mxf8f6f4 with UE8M0 scales -> .scale_vec::1X
+//   mxf4nvf4 with UE8M0 scales -> .scale_vec::2X
+//   mxf4nvf4 with UE4M3 scales -> .scale_vec::4X
+//
+// K-chunking model used in this implementation
+// We assume each scale applies to a contiguous run of K/groupSize elements:
+//   - FP8:     groupSize = 1  => 1X (32 elems per scale)
+//   - FP4 + int8 scales (mxfp4):  groupSize = 2  => 2X (32 elems per scale when
+//   K=64)
+//   - FP4 + float8 scales (nvfp4):groupSize = 4  => 4X (16 elems per scale when
+//   K=64)
+//
+// Broadcast direction
+// - A * SF_A is broadcast along K within each row of A.
+// - B * SF_B is broadcast along K within each column of B.
+// Selector tuples (provider and byte selectors)
+// Selectors are used to decide broadcasting rule for A * SF_A and B * SF_B.
+// Selectors are per warp-quad (4 lanes). Lanes in a quad are indexed {0,1,2,3}.
+//
+// Providers:
+//   - For A (thread-id-a in {0,1}):
+//       0 -> lane-pair {0,1}   (lower pair)
+//       1 -> lane-pair {2,3}   (upper pair)
+//   - For B (thread-id-b in {0,1,2,3}):
+//       selects a single lane within the quad.
+//
+// Byte selectors (which sub-field of the 32-bit metadata is used):
+//   - For scale_vec 1X: any byte {0,1,2,3}
+//   - For scale_vec 2X: byte-id must be 0 or 2   (picks a 2-byte half-word)
+//   - For scale_vec 4X: byte-id must be 0        (picks the full 4-byte word)
+// Data/selector operand types:
+//   - scale-a-data / scale-b-data are .b32
+//   - {byte-id-a, thread-id-a}, {byte-id-b, thread-id-b} are unsigned 16-bit
+// Implementation choices in this kernel
+// - We fix the provider selectors to choose the first providers:
+//     thread-id-a = 0  (A scales provided by lane-pair {0,1})
+//     thread-id-b = 0  (B scales provided by lane 0)
+// - We fix the byte selectors for both A and B to byte-id = 0.
+//   (Concretely, we pack scale bytes into a 32-bit register and always pick the
+//    lowest address subfield allowed by the scale_vec_size.)
+//
+// Why fixed selectors/providers by default?
+// - Fixing providers and byte selectors keeps the linear layout simple.
+//   especially when we need to support multiple scale types (1X, 2X, 4X).
+//
+// Practical mapping notes
+// - scale_vec_size = N implies K is split into N equal chunks per row/col.
+//   This implementation assumes K is divisible by N (no partial tail handling).
+// - FP8 forms use K=32; FP4 forms use K=64 for m16n8k64.
+//
+// PTX instruction forms used here (supported in this implementation)
+// - FP8 x FP8 (acc f32), scale_vec 1X:
+//   mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::1X
+//     .f32.{e5m2,e4m3}.{e5m2,e4m3}.f32.ue8m0
+//
+// - FP4 x FP4 (acc f32), scale_vec 2X with UE8M0:
+//   mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::2X
+//     .f32.e2m1.e2m1.f32.ue8m0
+//
+// - FP4 x FP4 (acc f32), scale_vec 4X with UE4M3:
+//   mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X
+//     .f32.e2m1.e2m1.f32.ue4m3
+LinearLayout getSM120DotScaledScaleLayout(MLIRContext *ctx, int dotOperandIdx,
+                                          ArrayRef<int64_t> dotOperandShape,
+                                          unsigned scaleVecMode,
+                                          ArrayRef<unsigned> tilesPerWarp,
+                                          ArrayRef<unsigned> warpsPerCTA,
+                                          CTALayoutAttr ctaLayoutAttr) {
   unsigned rank = dotOperandShape.size();
   auto outDims = standardOutDimNames(ctx, rank);
   StringAttr kRegister = StringAttr::get(ctx, "register");
   StringAttr kLane = StringAttr::get(ctx, "lane");
   StringAttr kWarp = StringAttr::get(ctx, "warp");
   const unsigned mIndex = 0, nIndex = 1;
-  const int instrM = mmaInstrM, instrN = mmaInstrN;
   const int kSize = dotOperandShape[1];
   const int mWarps = warpsPerCTA[mIndex];
   const int nWarps = warpsPerCTA[nIndex];
   const int totalWarps = mWarps * nWarps;
   const unsigned mRep_warp = tilesPerWarp[mIndex];
   const unsigned nRep_warp = tilesPerWarp[nIndex];
-  const unsigned kRep = kSize / kWidth;
+  const unsigned kRep = kSize / scaleVecMode;
   const unsigned kIdx = (dotOperandShape[0] == 1) ? 0 : 1;
   const unsigned mnIdx = 1 - kIdx;
   LinearLayout L = identityStandardND(kRegister, SmallVector<unsigned>(rank, 1),
@@ -1456,7 +1517,7 @@ getSM120DotScaledScaleLayout(MLIRContext *ctx, int dotOperandIdx,
   LinearLayout laneLayout({{kLane, laneBase}}, {outDims[kIdx], outDims[mnIdx]});
   L = L * laneLayout;
 
-  L = L * LinearLayout::identity1D(kWidth, kRegister, outDims[kIdx]);
+  L = L * LinearLayout::identity1D(scaleVecMode, kRegister, outDims[kIdx]);
   if (dotOperandIdx == 0) {
     L = L * LinearLayout::zeros1D(totalWarps / mWarps, kWarp, outDims[mnIdx]);
     L = L * LinearLayout::identity1D(mWarps, kWarp, outDims[mnIdx]);

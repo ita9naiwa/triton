@@ -3598,12 +3598,11 @@ TEST_F(LinearLayoutConversionsTest, TensorMemory_CTASplit) {
 TEST_F(LinearLayoutConversionsTest, SM120DotScaledScaleLayout_AScale_Basic) {
   // Test basic A-scale (per-row) layout for SM120
   // dotOperandIdx = 0 (A-scale), shape = [128, 32], tilesPerWarp = [1, 1],
-  // warpsPerCTA = [4, 1], instrM = 16, instrN = 8
+  // warpsPerCTA = [4, 1]
   auto layout = getSM120DotScaledScaleLayout(
       &ctx, /*dotOperandIdx=*/0, /*dotOperandShape=*/{128, 32},
       /*groupSize=*/1,
       /*tilesPerWarp=*/{1, 1}, /*warpsPerCTA=*/{4, 1},
-      /*mmaInstrM=*/16, /*mmaInstrN=*/8,
       /*ctaLayout=*/CTALayoutAttr::get(&ctx, {1, 1}, {1, 1}, {1, 0}));
 
   auto ll = LinearLayout(
@@ -3619,12 +3618,11 @@ TEST_F(LinearLayoutConversionsTest, SM120DotScaledScaleLayout_AScale_Basic) {
 TEST_F(LinearLayoutConversionsTest, SM120DotScaledScaleLayout_BScale_Basic) {
   // Test basic B-scale (per-col) layout for SM120
   // dotOperandIdx = 1 (B-scale), shape = [32, 128], tilesPerWarp = [1, 1],
-  // warpsPerCTA = [1, 4], instrM = 16, instrN = 8
+  // warpsPerCTA = [1, 4]
   auto layout = getSM120DotScaledScaleLayout(
       &ctx, /*dotOperandIdx=*/1, /*dotOperandShape=*/{32, 128},
       /*groupSize=*/1,
       /*tilesPerWarp=*/{1, 1}, /*warpsPerCTA=*/{1, 4},
-      /*mmaInstrM=*/16, /*mmaInstrN=*/8,
       /*ctaLayout=*/CTALayoutAttr::get(&ctx, {1, 1}, {1, 1}, {1, 0}));
   auto ll = LinearLayout(
       {{S("register"),
@@ -3644,7 +3642,6 @@ TEST_F(LinearLayoutConversionsTest, SM120DotScaledScaleLayout_MultiWarp) {
       &ctx, /*dotOperandIdx=*/0, /*dotOperandShape=*/{256, 64},
       /*groupSize=*/1,
       /*tilesPerWarp=*/{2, 1}, /*warpsPerCTA=*/{2, 2},
-      /*mmaInstrM=*/16, /*mmaInstrN=*/8,
       /*ctaLayout=*/CTALayoutAttr::get(&ctx, {1, 1}, {1, 1}, {1, 0}));
   auto ll = LinearLayout({{S("register"),
                            {{32, 0},
@@ -3667,7 +3664,6 @@ TEST_F(LinearLayoutConversionsTest, SM120DotScaledScaleLayout_MultiWarp) {
       &ctx, /*dotOperandIdx=*/1, /*dotOperandShape=*/{256, 64},
       /*groupSize=*/1,
       /*tilesPerWarp=*/{2, 1}, /*warpsPerCTA=*/{2, 2},
-      /*mmaInstrM=*/16, /*mmaInstrN=*/8,
       /*ctaLayout=*/CTALayoutAttr::get(&ctx, {1, 1}, {1, 1}, {1, 0}));
   ll = LinearLayout({{S("register"),
                       {{0, 1},
@@ -3698,7 +3694,6 @@ TEST_F(LinearLayoutConversionsTest,
       &ctx, /*dotOperandIdx=*/0, /*dotOperandShape=*/{128, 64},
       /*groupSize=*/2,
       /*tilesPerWarp=*/{1, 1}, /*warpsPerCTA=*/{1, 1},
-      /*mmaInstrM=*/16, /*mmaInstrN=*/8,
       /*ctaLayout=*/CTALayoutAttr::get(&ctx, {1, 1}, {1, 1}, {1, 0}));
 
   auto ll = LinearLayout(
@@ -3720,7 +3715,6 @@ TEST_F(LinearLayoutConversionsTest,
       &ctx, /*dotOperandIdx=*/1, /*dotOperandShape=*/{64, 128},
       /*groupSize=*/2,
       /*tilesPerWarp=*/{1, 1}, /*warpsPerCTA=*/{1, 1},
-      /*mmaInstrM=*/16, /*mmaInstrN=*/8,
       /*ctaLayout=*/CTALayoutAttr::get(&ctx, {1, 1}, {1, 1}, {1, 0}));
 
   auto ll = LinearLayout(
