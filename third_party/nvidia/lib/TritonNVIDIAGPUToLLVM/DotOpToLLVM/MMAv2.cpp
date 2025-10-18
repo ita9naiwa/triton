@@ -912,13 +912,12 @@ LogicalResult convertMMADotScaled(triton::DotScaledOp op,
   TensorCoreType mmaType =
       getMmaTypeDotScaled(op, aTensorTy, bTensorTy, dTensorTy);
 
-  NumRegisters numRegisters = {2, 1, 2};
-
   SmallVector<Value> unpackedAScale =
       unpackLLElements(op.getLoc(), adaptor.getAScale(), rewriter);
   SmallVector<Value> unpackedBScale =
       unpackLLElements(op.getLoc(), adaptor.getBScale(), rewriter);
 
+  NumRegisters numRegisters = {2, 1, 2};
   EmitMmaCallback emit = [&](PTXBuilder &builder, int b, int m, int n, int k,
                              mlir::triton::PTXInstr &mma, unsigned numMmaRets,
                              unsigned colsPerThread, unsigned batchOffset,
