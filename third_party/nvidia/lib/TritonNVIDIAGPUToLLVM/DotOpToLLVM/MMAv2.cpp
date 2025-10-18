@@ -929,28 +929,33 @@ LogicalResult convertMMADotScaled(triton::DotScaledOp op,
     auto i32 = IntegerType::get(op->getContext(), 32);
 
     auto packElements = [&](ArrayRef<Value> bytes, int loc,
-      int numBytes) -> Value {
-        Value packed = tb.zext(i32, bytes[loc]);
-        for (int i = 1; i < numBytes; ++i) {
-          Value byte = tb.zext(i32, bytes[loc + i]);
-          Value shifted = tb.shl(byte, tb.i32_val(i * 8));
-          packed = tb.or_(packed, shifted);
-        }
-        return packed;
-      };
+                            int numBytes) -> Value {
+      Value packed = tb.zext(i32, bytes[loc]);
+      for (int i = 1; i < numBytes; ++i) {
+        Value byte = tb.zext(i32, bytes[loc + i]);
+        Value shifted = tb.shl(byte, tb.i32_val(i * 8));
+        packed = tb.or_(packed, shifted);
+      }
+      return packed;
+    };
 
     int scaleVecMode;
-    if (instrMap.at(mmaType).find("1X") != std::string::npos) {
+    if (mmaInstrPtxScaled.at(mmaType).find("1X") != std::string::npos) {
       scaleVecMode = 1;
-    } else if (mmaType == TensorCoreType::FP32_FP4E2M1_FP4E2M1_FP32_SCALE_VEC_2X) {
+    } else if (mmaType ==
+               TensorCoreType::FP32_FP4E2M1_FP4E2M1_FP32_SCALE_VEC_2X) {
       scaleVecMode = 2;
     } else if (mmaType == TensorCoreType::FP32_NVFP4_NVFP4_FP32_SCALE_VEC_4X) {
       scaleVecMode = 4;
     } else {
       llvm_unreachable("Unsupported scale vector mode!");
     }
-    Value aScaleValue = packElements(unpackedAScale, m * repK * scaleVecMode + k * scaleVecMode, scaleVecMode);
-    Value bScaleValue = packElements(unpackedBScale, n * repK * scaleVecMode + k * scaleVecMode, scaleVecMode);
+    Value aScaleValue =
+        packElements(unpackedAScale, m * repK * scaleVecMode + k * scaleVecMode,
+                     scaleVecMode);
+    Value bScaleValue =
+        packElements(unpackedBScale, n * repK * scaleVecMode + k * scaleVecMode,
+                     scaleVecMode);
 
     BaseOffset base{numRegisters.m * m, numRegisters.n * n, numRegisters.k * k};
     callMmaScaled(builder, b, base, mma, numMmaRets, colsPerThread, aTable,
