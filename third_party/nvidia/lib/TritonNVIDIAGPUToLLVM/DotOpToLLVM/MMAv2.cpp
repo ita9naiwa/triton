@@ -949,8 +949,8 @@ LogicalResult convertMMADotScaled(triton::DotScaledOp op,
     } else {
       llvm_unreachable("Unsupported scale vector mode!");
     }
-    Value aScaleValue = packElements(unpackedAScale, m * k * scaleVecMode + k * scaleVecMode, scaleVecMode);
-    Value bScaleValue = packElements(unpackedBScale, m * k * scaleVecMode + k * scaleVecMode, scaleVecMode);
+    Value aScaleValue = packElements(unpackedAScale, m * repK * scaleVecMode + k * scaleVecMode, scaleVecMode);
+    Value bScaleValue = packElements(unpackedBScale, n * repK * scaleVecMode + k * scaleVecMode, scaleVecMode);
 
     BaseOffset base{numRegisters.m * m, numRegisters.n * n, numRegisters.k * k};
     callMmaScaled(builder, b, base, mma, numMmaRets, colsPerThread, aTable,
