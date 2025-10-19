@@ -237,8 +237,20 @@ class CUDABackend(BaseBackend):
         passes.ttir.add_rewrite_tensor_pointer(pm)
         if capability // 10 < 9:
             passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
-        # SM_120: Convert simple loads to descriptors for TMA support
-        if capability == 120:
+        # SM_120: Convert simple loads to descriptors for TMA support (opt-in)
+        use_tma_env = os.environ.get("USE_TMA_SM120", "").strip().lower()
+        use_tma = use_tma_env in ("1", "true", "yes", "on")
+        # Only enable TMA pass if a runtime allocator is set (required for descriptor scratch)
+        allocator_is_set = False
+        try:
+            from triton.runtime import _allocation as _alloc  # type: ignore
+            allocator_is_set = getattr(_alloc, "_allocator", None) is not None
+        except Exception:
+            allocator_is_set = False
+        # Allow force override
+        force_env = os.environ.get("USE_TMA_SM120_FORCE", "").strip().lower()
+        force_tma = force_env in ("1", "true", "yes", "on")
+        if capability == 120 and use_tma and (allocator_is_set or force_tma):
             passes.ttir.add_convert_load_to_descriptor_sm120(pm, capability)
         passes.common.add_canonicalizer(pm)
         passes.ttir.add_combine(pm)

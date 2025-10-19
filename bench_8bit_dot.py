@@ -6,11 +6,21 @@ import triton
 import triton.language as tl
 import time
 
-# Set global scratch allocator for TMA descriptors
-def cuda_allocator(size, align, stream):
-    return torch.cuda.caching_allocator_alloc(size, stream=stream)
+# Set a default global scratch allocator so TMA kernels can run
+def _cuda_allocator(size, align, stream):
+    try:
+        return torch.cuda.caching_allocator_alloc(size, stream=stream)
+    except Exception:
+        # Fallback: allocate a raw buffer; Triton will treat it as bytes
+        return torch.empty(size, device="cuda", dtype=torch.int8)
 
-triton.set_allocator(cuda_allocator)
+triton.set_allocator(_cuda_allocator)
+
+# # Set global scratch allocator for TMA descriptors
+# def cuda_allocator(size, align, stream):
+#     return torch.cuda.caching_allocator_alloc(size, stream=stream)
+
+# triton.set_allocator(cuda_allocator)
 
 
 @triton.jit
