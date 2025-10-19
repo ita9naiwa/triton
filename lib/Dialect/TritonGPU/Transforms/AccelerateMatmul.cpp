@@ -705,21 +705,49 @@ public:
 
     Operation *newDot = nullptr;
 
-    // ScaledBlockedToMMA logic
+    // For SM_120, use SMEM path to enable TMA (like MMAv5)
+    // This allows the pipeliner to automatically convert to TMA loads
+    Value aSmem = getSharedMemoryMMAOperand(a, rewriter, 0,
+                                            /*allowTranspose=*/true,
+                                            /*isMMAv5Fp4Padded=*/false,
+                                            /*forceTranspose=*/false, dotOp);
+    Value bSmem = getSharedMemoryMMAOperand(b, rewriter, 1,
+                                            /*allowTranspose=*/true,
+                                            /*isMMAv5Fp4Padded=*/false,
+                                            /*forceTranspose=*/false, dotOp);
+
+    // Load from SMEM to registers with DotOperandEncoding
+    auto aSmemType = cast<MemDescType>(aSmem.getType());
+    auto bSmemType = cast<MemDescType>(bSmem.getType());
+
     int bitwidthA = oldAType.getElementType().getIntOrFloatBitWidth();
     int bitwidthB = oldBType.getElementType().getIntOrFloatBitWidth();
     int minBitwidth = std::min(bitwidthA, bitwidthB);
 
-    Value newA = convertDotOperandForMMA(a, 0, minBitwidth,
-                                         mmaResult.newRetType, rewriter);
-    Value newB = convertDotOperandForMMA(b, 1, minBitwidth,
-                                         mmaResult.newRetType, rewriter);
+    auto aDotEncoding = DotOperandEncodingAttr::get(
+        dotOp.getContext(), 0, mmaResult.newRetType.getEncoding(),
+        minBitwidth > 0 ? rewriter.getIntegerType(minBitwidth)
+                        : oldAType.getElementType());
+    auto bDotEncoding = DotOperandEncodingAttr::get(
+        dotOp.getContext(), 1, mmaResult.newRetType.getEncoding(),
+        minBitwidth > 0 ? rewriter.getIntegerType(minBitwidth)
+                        : oldBType.getElementType());
 
-    // Compute tiles per warp for each operand
+    auto newAType = RankedTensorType::get(
+        oldAType.getShape(), oldAType.getElementType(), aDotEncoding);
+    auto newBType = RankedTensorType::get(
+        oldBType.getShape(), oldBType.getElementType(), bDotEncoding);
+
+    Value newA =
+        rewriter.create<triton::gpu::LocalLoadOp>(a.getLoc(), newAType, aSmem);
+    Value newB =
+        rewriter.create<triton::gpu::LocalLoadOp>(b.getLoc(), newBType, bSmem);
+
+    // Compute tiles per warp for scale layout
     auto computeTilePerWarp = [&](Value operand, int operandIdx) -> unsigned {
       auto operandTy = cast<RankedTensorType>(operand.getType());
-      auto dotEncoding = dyn_cast<triton::gpu::DotOperandEncodingAttr>(
-          operandTy.getEncoding());
+      auto dotEncoding =
+          cast<triton::gpu::DotOperandEncodingAttr>(operandTy.getEncoding());
       if (!dotEncoding)
         return 1;
 
