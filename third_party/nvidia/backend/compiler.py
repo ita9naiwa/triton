@@ -237,6 +237,9 @@ class CUDABackend(BaseBackend):
         passes.ttir.add_rewrite_tensor_pointer(pm)
         if capability // 10 < 9:
             passes.ttir.add_rewrite_tensor_descriptor_to_pointer(pm)
+        # SM_120: Convert simple loads to descriptors for TMA support
+        if capability == 120:
+            passes.ttir.add_convert_load_to_descriptor_sm120(pm, capability)
         passes.common.add_canonicalizer(pm)
         passes.ttir.add_combine(pm)
         passes.ttir.add_reorder_broadcast(pm)

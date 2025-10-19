@@ -13,6 +13,7 @@ add_triton_library(TritonTransforms
   RewriteTensorDescriptorToPointer.cpp
   ArithTypeConversion.cpp
   FunctionTypeConversion.cpp
+  ConvertLoadToDescriptorSM120.cpp
 
   DEPENDS
   TritonTransformsIncGen

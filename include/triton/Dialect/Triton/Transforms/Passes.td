@@ -90,4 +90,14 @@ def TritonLoopAwareCSE : Pass<"triton-loop-aware-cse", "mlir::ModuleOp"> {
   }];
 }
 
+// SM_120: Convert simple tt.load to descriptor-based loads to enable TMA
+def TritonConvertLoadToDescriptorSM120 : Pass<"triton-convert-load-to-descriptor-sm120", "mlir::ModuleOp"> {
+  let summary = "Convert eligible tt.load ops to descriptor_load for SM_120";
+  let description = [{
+    This pass recognizes simple tensor global loads used by dot operations and
+    replaces them with `tt.make_tensor_descriptor` + `tt.descriptor_load` so
+    that downstream passes can lower them to TMA.
+  }];
+}
+
 #endif

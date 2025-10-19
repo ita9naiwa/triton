@@ -13,6 +13,10 @@ namespace triton {
 #define GEN_PASS_REGISTRATION
 #include "triton/Dialect/Triton/Transforms/Passes.h.inc"
 
+// SM_120: Convert simple tt.load to descriptor-based loads to enable TMA
+std::unique_ptr<mlir::Pass>
+createConvertLoadToDescriptorSM120Pass(int computeCapability);
+
 } // namespace triton
 } // namespace mlir
 

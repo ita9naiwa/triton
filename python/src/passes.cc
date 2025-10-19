@@ -47,6 +47,13 @@ void init_triton_passes_ttir(py::module &&m) {
   ADD_PASS_WRAPPER_0("add_loop_unroll", createTritonLoopUnroll);
   ADD_PASS_WRAPPER_0("add_triton_licm", createTritonLoopInvariantCodeMotion);
   ADD_PASS_WRAPPER_0("add_loop_aware_cse", createTritonLoopAwareCSE);
+  // SM_120 descriptor conversion pass (takes capability)
+  m.def(
+      "add_convert_load_to_descriptor_sm120",
+      [](mlir::PassManager &pm, int capability) {
+        pm.addPass(createConvertLoadToDescriptorSM120Pass(capability));
+      },
+      py::arg("pm"), py::arg("capability"));
   ADD_PASS_OPTION_WRAPPER_4("add_convert_to_ttgpuir",
                             createConvertTritonToTritonGPU, const std::string &,
                             int, int, int);
